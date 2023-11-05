@@ -32,6 +32,10 @@ class ApplyStableFastUnet:
 
     def apply_stable_fast(self, model):
         config = CompilationConfig.Default()
+
+        if config.memory_format is not None:
+            model.model.to(memory_format=config.memory_format)
+
         # xformers and triton are suggested for achieving best performance.
         # It might be slow for triton to generate, compile and fine-tune kernels.
         try:
