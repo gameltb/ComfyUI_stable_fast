@@ -1,4 +1,11 @@
-from .module.stable_diffusion_pipeline_compiler import (CompilationConfig, compile_unet)
+import os
+
+from .module.stable_diffusion_pipeline_compiler import (CompilationConfig,
+                                                        compile_unet)
+
+def is_cuda_malloc_async():
+    env_var = os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")
+    return "backend:cudaMallocAsync" in env_var
 
 class StableFastPatch:
     def __init__(self, model, config):
@@ -17,7 +24,7 @@ class StableFastPatch:
         return self.stable_fast_model(input_x, timestep_, **c)
 
     def to(self, device):
-        pass
+        return self
 
 
 class ApplyStableFastUnet:
@@ -43,11 +50,16 @@ class ApplyStableFastUnet:
             config.enable_xformers = True
         except ImportError:
             print('xformers not installed, skip')
-        # try:
-        #     import triton
-        #     config.enable_triton = True
-        # except ImportError:
-        #     print('triton not installed, skip')
+        try:
+            import triton
+            config.enable_triton = True
+        except ImportError:
+            print('triton not installed, skip')
+
+        if config.enable_triton and is_cuda_malloc_async():
+            print('disable stable fast triton because of cudaMallocAsync')
+            config.enable_triton = False
+
         # CUDA Graph is suggested for small batch sizes.
         # After capturing, the model only accepts one fixed image size.
         # If you want the model to be dynamic, don't enable it.
