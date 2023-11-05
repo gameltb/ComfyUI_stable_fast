@@ -28,9 +28,6 @@ class CompilationConfig:
 
 
 def compile_unet(unet_funtion, config, device):
-    if config.memory_format is not None:
-        unet_funtion.to(memory_format=config.memory_format)
-
     enable_cuda_graph = config.enable_cuda_graph and device.type == 'cuda'
 
     with torch.no_grad():
