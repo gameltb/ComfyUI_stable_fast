@@ -32,6 +32,10 @@ class ApplyStableFastUnet:
 
     def apply_stable_fast(self, model):
         config = CompilationConfig.Default()
+
+        if config.memory_format is not None:
+            model.model.to(memory_format=config.memory_format)
+
         # xformers and triton are suggested for achieving best performance.
         # It might be slow for triton to generate, compile and fine-tune kernels.
         try:
@@ -39,16 +43,16 @@ class ApplyStableFastUnet:
             config.enable_xformers = True
         except ImportError:
             print('xformers not installed, skip')
-        try:
-            import triton
-            config.enable_triton = True
-        except ImportError:
-            print('triton not installed, skip')
+        # try:
+        #     import triton
+        #     config.enable_triton = True
+        # except ImportError:
+        #     print('triton not installed, skip')
         # CUDA Graph is suggested for small batch sizes.
         # After capturing, the model only accepts one fixed image size.
         # If you want the model to be dynamic, don't enable it.
-        config.enable_cuda_graph = False
-        config.enable_jit_freeze = False
+        config.enable_cuda_graph = True
+        # config.enable_jit_freeze = False
 
         patch = StableFastPatch(model, config)
         model_stable_fast = model.clone()
