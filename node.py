@@ -46,6 +46,10 @@ class StableFastPatch:
         input_x = params.get("input")
         timestep_ = params.get("timestep")
         c = params.get("c")
+        
+        # disable with accelerate for now
+        if hasattr(model_function.__self__, "hf_device_map"):
+            return model_function(input_x, timestep_, **c)
 
         if self.stable_fast_model is None:
             self.stable_fast_model = compile_unet(model_function, self.config, input_x.device)
