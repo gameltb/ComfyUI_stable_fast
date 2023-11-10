@@ -1,8 +1,11 @@
+import copy
 import os
+
 import torch
 
 from .module.stable_diffusion_pipeline_compiler import (CompilationConfig,
                                                         compile_unet)
+
 
 def is_cuda_malloc_async():
     env_var = os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")
@@ -41,6 +44,8 @@ class StableFastPatch:
         self.model = model
         self.config = config
         self.stable_fast_model = None
+        self.stash_diffusion_model = None
+        self.device = None
 
     def __call__(self, model_function, params):
         input_x = params.get("input")
@@ -48,18 +53,31 @@ class StableFastPatch:
         c = params.get("c")
         
         # disable with accelerate for now
-        if hasattr(model_function.__self__, "hf_device_map"):
+        if hasattr(model_function.__self__, "hf_device_map") and self.stable_fast_model is None:
             return model_function(input_x, timestep_, **c)
 
         if self.stable_fast_model is None:
+            if self.config.enable_cuda_graph or self.config.enable_jit_freeze:
+                self.stash_diffusion_model = copy.deepcopy(model_function.__self__.diffusion_model.to("cpu"))
+                model_function.__self__.diffusion_model.to(self.device)
             self.stable_fast_model = compile_unet(model_function, self.config, input_x.device)
 
         return self.stable_fast_model(input_x, timestep_, **c)
 
     def to(self, device):
+        if type(device) == torch.device:
+            self.device = device
+        # comfyui tell we should move to cpu. but we cannt do it with cuda graph and freeze now.
         if device == torch.device("cpu"):
-            del self.stable_fast_model 
-            self.stable_fast_model = None
+            if self.config.enable_cuda_graph or self.config.enable_jit_freeze:
+                del self.stable_fast_model 
+                self.stable_fast_model = None
+                if not self.stash_diffusion_model is None:
+                    self.model.model.diffusion_model = self.stash_diffusion_model
+                    self.stash_diffusion_model = None
+                # disable cuda graph
+                self.config.enable_cuda_graph = False
+                self.config.enable_jit_freeze = False
         return self
 
 
