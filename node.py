@@ -1,8 +1,10 @@
-import os
+import time
+
 import torch
 
 from .module.stable_diffusion_pipeline_compiler import (CompilationConfig,
                                                         compile_unet)
+
 
 def is_cuda_malloc_async():
     return "cudaMallocAsync" in torch.cuda.get_allocator_backend()
@@ -14,17 +16,19 @@ def gen_stable_fast_config():
     # It might be slow for triton to generate, compile and fine-tune kernels.
     try:
         import xformers
+
         config.enable_xformers = True
     except ImportError:
-        print('xformers not installed, skip')
+        print("xformers not installed, skip")
     try:
         import triton
+
         config.enable_triton = True
     except ImportError:
-        print('triton not installed, skip')
+        print("triton not installed, skip")
 
     if config.enable_triton and is_cuda_malloc_async():
-        print('disable stable fast triton because of cudaMallocAsync')
+        print("disable stable fast triton because of cudaMallocAsync")
         config.enable_triton = False
 
     # CUDA Graph is suggested for small batch sizes.
@@ -40,32 +44,69 @@ class StableFastPatch:
         self.model = model
         self.config = config
         self.stable_fast_model = None
+        self.offload_flag = False
+        self.model_device = torch.device("cpu")
 
     def __call__(self, model_function, params):
         input_x = params.get("input")
         timestep_ = params.get("timestep")
         c = params.get("c")
-        
+
         # disable with accelerate for now
         if hasattr(model_function.__self__, "hf_device_map"):
             return model_function(input_x, timestep_, **c)
 
         if self.stable_fast_model is None:
-            self.stable_fast_model = compile_unet(model_function, self.config, input_x.device)
+            self.stable_fast_model = compile_unet(
+                model_function, self.config, input_x.device
+            )
 
-        return self.stable_fast_model(input_x, timestep_, **c)
+        if self.config.enable_cuda_graph or self.config.enable_jit_freeze:
+            return self.stable_fast_model(input_x, timestep_, **c)(
+                input_x, timestep_, **c
+            )
+        else:
+            stable_fast_model_function = self.stable_fast_model(input_x, timestep_, **c)
+            if self.offload_flag:
+                if self.model_device != self.model.offload_device:
+                    # TODO: Find a way to reduce the loss caused by unwanted model transfers
+                    st = time.perf_counter()
+                    model_function.__self__.diffusion_model.to(
+                        self.model.offload_device
+                    )
+                    self.model_device = self.model.offload_device
+                    stable_fast_model_function.to(input_x.device)
+                    print(f"\33[93mOffload use {time.perf_counter() - st:.2f} seconds\33[0m")
+            return stable_fast_model_function(input_x, timestep_, **c)
 
     def to(self, device):
-        if device == torch.device("cpu"):
-            del self.stable_fast_model 
-            self.stable_fast_model = None
+        if type(device) == torch.device:
+            self.model_device = device
+            if self.config.enable_cuda_graph or self.config.enable_jit_freeze:
+                if device.type == "cpu":
+                    # comfyui tell we should move to cpu. but we cannt do it with cuda graph and freeze now.
+                    del self.stable_fast_model
+                    self.stable_fast_model = None
+                    self.config.enable_cuda_graph = False
+                    self.config.enable_jit_freeze = False
+                    print(
+                        "\33[93mWarning: Your graphics card doesn't have enough video memory to keep the model. Disable stable fast cuda graph, Flexibility will be improved but speed will be lost.\33[0m"
+                    )
+            else:
+                if self.stable_fast_model != None and device.type == "cpu":
+                    self.offload_flag = True
+                    self.stable_fast_model.to(device)
         return self
 
 
 class ApplyStableFastUnet:
     @classmethod
     def INPUT_TYPES(s):
-        return {"required": {"model": ("MODEL",), }}
+        return {
+            "required": {
+                "model": ("MODEL",),
+            }
+        }
 
     RETURN_TYPES = ("MODEL",)
     FUNCTION = "apply_stable_fast"
