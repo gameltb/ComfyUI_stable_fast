@@ -5,8 +5,7 @@ from .module.stable_diffusion_pipeline_compiler import (CompilationConfig,
                                                         compile_unet)
 
 def is_cuda_malloc_async():
-    env_var = os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")
-    return "backend:cudaMallocAsync" in env_var
+    return "cudaMallocAsync" in torch.cuda.get_allocator_backend()
 
 
 def gen_stable_fast_config():
