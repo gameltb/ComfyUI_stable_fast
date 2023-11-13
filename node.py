@@ -1,9 +1,10 @@
 import time
 
 import torch
+from sfast.compilers.stable_diffusion_pipeline_compiler import CompilationConfig
+from sfast.jit.trace_helper import to_module
 
-from .module.stable_diffusion_pipeline_compiler import (CompilationConfig,
-                                                        compile_unet)
+from .module.stable_diffusion_pipeline_compiler import compile_unet
 
 
 def is_cuda_malloc_async():
@@ -56,9 +57,11 @@ class StableFastPatch:
         if hasattr(model_function.__self__, "hf_device_map"):
             return model_function(input_x, timestep_, **c)
 
+        model_function_module = to_module(model_function)
+
         if self.stable_fast_model is None:
             self.stable_fast_model = compile_unet(
-                model_function, self.config, input_x.device
+                model_function_module, self.config, input_x.device
             )
 
         if self.config.enable_cuda_graph or self.config.enable_jit_freeze:
@@ -69,14 +72,12 @@ class StableFastPatch:
             stable_fast_model_function = self.stable_fast_model(input_x, timestep_, **c)
             if self.offload_flag:
                 if self.model_device != self.model.offload_device:
-                    # TODO: Find a way to reduce the loss caused by unwanted model transfers
-                    st = time.perf_counter()
-                    model_function.__self__.diffusion_model.to(
-                        self.model.offload_device
+                    next(
+                        next(stable_fast_model_function.children()).children()
+                    ).load_state_dict(
+                        model_function_module.state_dict(), strict=False, assign=True
                     )
                     self.model_device = self.model.offload_device
-                    stable_fast_model_function.to(input_x.device)
-                    print(f"\33[93mOffload use {time.perf_counter() - st:.2f} seconds\33[0m")
             return stable_fast_model_function(input_x, timestep_, **c)
 
     def to(self, device):
@@ -95,7 +96,7 @@ class StableFastPatch:
             else:
                 if self.stable_fast_model != None and device.type == "cpu":
                     self.offload_flag = True
-                    self.stable_fast_model.to(device)
+                    self.stable_fast_model.to_empty("meta")
         return self
 
 
