@@ -57,9 +57,8 @@ class StableFastPatch:
         if hasattr(model_function.__self__, "hf_device_map"):
             return model_function(input_x, timestep_, **c)
 
-        model_function_module = to_module(model_function)
-
         if self.stable_fast_model is None:
+            model_function_module = to_module(model_function)
             self.stable_fast_model = compile_unet(
                 model_function_module, self.config, input_x.device
             )
@@ -72,6 +71,7 @@ class StableFastPatch:
             stable_fast_model_function = self.stable_fast_model(input_x, timestep_, **c)
             if self.offload_flag:
                 if self.model_device != self.model.offload_device:
+                    model_function_module = to_module(model_function)
                     next(
                         next(stable_fast_model_function.children()).children()
                     ).load_state_dict(
