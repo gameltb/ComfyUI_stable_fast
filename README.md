@@ -16,8 +16,9 @@ It can work with Lora, ControlNet and lcm. SD1.5, SDXL, and SSD-1B are supported
 Run ComfyUI with `--disable-cuda-malloc` may be possible to optimize the speed further.
 
 > [!NOTE]
->
-> stable fast not work well with accelerate, So this node has no effect when the vram is low. For example: 6G vram card run SDXL.  
+> 
+> - If you are using WSL, please do not install Triton for the time being due to bugs. 
+> - stable fast not work well with accelerate, So this node has no effect when the vram is low. For example: 6G vram card run SDXL.  
 
 ![sd1.5](asset/scr.png)
 ![ssd-1b](asset/scr1.png)
