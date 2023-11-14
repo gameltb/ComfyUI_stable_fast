@@ -1,7 +1,6 @@
 import time
 
 import torch
-
 from sfast.compilers.stable_diffusion_pipeline_compiler import (
     CompilationConfig, compile_unet)
 
