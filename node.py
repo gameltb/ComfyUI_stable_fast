@@ -117,6 +117,7 @@ class ApplyStableFastUnet:
         return {
             "required": {
                 "model": ("MODEL",),
+                "enable_cuda_graph": ("BOOLEAN", {"default": True}), 
             }
         }
 
@@ -125,8 +126,12 @@ class ApplyStableFastUnet:
 
     CATEGORY = "loaders"
 
-    def apply_stable_fast(self, model):
+    def apply_stable_fast(self, model, enable_cuda_graph):
         config = gen_stable_fast_config()
+
+        if not enable_cuda_graph:
+            config.enable_cuda_graph = False
+            config.enable_jit_freeze = False
 
         if config.memory_format is not None:
             model.model.to(memory_format=config.memory_format)
