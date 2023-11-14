@@ -1,5 +1,3 @@
-import time
-
 import torch
 from sfast.compilers.stable_diffusion_pipeline_compiler import CompilationConfig
 from sfast.jit.trace_helper import to_module
@@ -60,15 +58,20 @@ class StableFastPatch:
         if self.stable_fast_model is None:
             model_function_module = to_module(model_function)
             self.stable_fast_model = compile_unet(
-                model_function_module, self.config, input_x.device
+                model_function_module,
+                model_function.__self__.model_config.unet_config,
+                self.config,
+                input_x.device,
+                id(self)
             )
 
         if self.config.enable_cuda_graph or self.config.enable_jit_freeze:
-            return self.stable_fast_model(input_x, timestep_, **c)(
+            return self.stable_fast_model.get_traced_module(input_x, timestep_, **c)[0](
                 input_x, timestep_, **c
             )
         else:
-            stable_fast_model_function = self.stable_fast_model(input_x, timestep_, **c)
+            stable_fast_model_function, patch_id = self.stable_fast_model.get_traced_module(input_x, timestep_, **c)
+            loaded = False
             if self.offload_flag:
                 if self.model_device != self.model.offload_device:
                     model_function_module = to_module(model_function)
@@ -78,6 +81,14 @@ class StableFastPatch:
                         model_function_module.state_dict(), strict=False, assign=True
                     )
                     self.model_device = self.model.offload_device
+                    loaded = True
+            if id(self) != patch_id and not loaded:
+                model_function_module = to_module(model_function)
+                next(
+                    next(stable_fast_model_function.children()).children()
+                ).load_state_dict(
+                    model_function_module.state_dict(), strict=False, assign=True
+                )
             return stable_fast_model_function(input_x, timestep_, **c)
 
     def to(self, device):

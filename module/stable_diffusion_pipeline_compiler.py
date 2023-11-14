@@ -1,6 +1,5 @@
 import functools
 import logging
-import threading
 
 import torch
 from sfast.compilers.stable_diffusion_pipeline_compiler import _modify_model
@@ -11,95 +10,95 @@ from sfast.jit.trace_helper import hash_arg, trace_with_kwargs
 logger = logging.getLogger()
 
 
-def lazy_trace(func, *, ts_compiler=None, **kwargs_):
-    class TraceModule:
-        def __init__(self) -> None:
-            self.lock = threading.Lock()
-            self.traced_modules = {}
+class LazyTraceModule:
+    traced_modules = {}
 
-        def __call__(self, *args, **kwargs):
-            key = (hash_arg(args), hash_arg(kwargs))
-            traced_module = self.traced_modules.get(key)
-            if traced_module is None:
-                with self.lock:
-                    traced_module = self.traced_modules.get(key)
-                    if traced_module is None:
-                        logger.info(
-                            f'Tracing {getattr(func, "__name__", func.__class__.__name__)}'
-                        )
-                        traced_m, call_helper = trace_with_kwargs(
-                            func, args, kwargs, **kwargs_
-                        )
-                        if ts_compiler is not None:
-                            traced_m = ts_compiler(traced_m, call_helper, args, kwargs)
-                        traced_module = call_helper(traced_m)
-                        self.traced_modules[key] = traced_module
-            return traced_module
+    def __init__(self, func, *, unet_config=None, config=None,patch_id=None, **kwargs_) -> None:
+        self.func = func
+        self.unet_config = unet_config
+        self.config = config
+        self.patch_id = patch_id
+        self.kwargs_ = kwargs_
+        self.modify_model = functools.partial(
+            _modify_model,
+            enable_cnn_optimization=config.enable_cnn_optimization,
+            prefer_lowp_gemm=config.prefer_lowp_gemm,
+            enable_triton=config.enable_triton,
+            memory_format=config.memory_format,
+        )
+        self.cuda_graph_modules = {}
 
-        def to(self, device):
-            for v in self.traced_modules.values():
-                v.to(device)
+    def ts_compiler(
+        self,
+        m,
+    ):
+        with torch.jit.optimized_execution(True):
+            if self.config.enable_jit_freeze:
+                # raw freeze causes Tensor reference leak
+                # because the constant Tensors in the GraphFunction of
+                # the compilation unit are never freed.
+                m.eval()
+                m = jit_utils.better_freeze(m)
+            self.modify_model(m)
 
-        def to_empty(self, device):
-            for v in self.traced_modules.values():
-                v.to_empty(device=device)
+        if self.config.enable_cuda_graph:
+            m = make_dynamic_graphed_callable(m)
+        return m
 
-    return TraceModule()
+    def get_traced_module(self, *args, **kwargs):
+        key = (hash_arg(args), hash_arg(kwargs))
+        patch_id = None
+        traced_module = self.cuda_graph_modules.get(key)
+        if traced_module is None and not (self.config.enable_cuda_graph or self.config.enable_jit_freeze):
+            traced_module_pair = self.traced_modules.get(key)
+            if not traced_module_pair is None:
+                patch_id  =  traced_module_pair[1]
+                traced_module_pair[1] = self.patch_id
+                traced_module = traced_module_pair[0]
+        if traced_module is None:
+            logger.info(
+                f'Tracing {getattr(self.func, "__name__", self.func.__class__.__name__)}'
+            )
+            traced_m, call_helper = trace_with_kwargs(
+                self.func, args, kwargs, **self.kwargs_
+            )
+            traced_m = self.ts_compiler(traced_m)
+            traced_module = call_helper(traced_m)
+            if self.config.enable_cuda_graph or self.config.enable_jit_freeze:
+                self.cuda_graph_modules[key] = traced_module
+            else:
+                self.traced_modules[key] = [traced_module, self.patch_id]
+                patch_id = self.patch_id
+        return traced_module, patch_id
+
+    def to_empty(self, device):
+        for v in self.traced_modules.values():
+            v[0].to_empty(device=device)
 
 
-def compile_unet(unet_module, config, device):
-    enable_cuda_graph = config.enable_cuda_graph and device.type == "cuda"
+def compile_unet(unet_module, unet_config, config, device, patch_id):
+    config.enable_cuda_graph = config.enable_cuda_graph and device.type == "cuda"
 
     with torch.no_grad():
         if config.enable_xformers:
             if config.enable_jit:
-                from sfast.utils.xformers_attention import \
-                    xformers_memory_efficient_attention
+                from sfast.utils.xformers_attention import (
+                    xformers_memory_efficient_attention,
+                )
                 from xformers import ops
 
                 ops.memory_efficient_attention = xformers_memory_efficient_attention
 
         if config.enable_jit:
-            modify_model = functools.partial(
-                _modify_model,
-                enable_cnn_optimization=config.enable_cnn_optimization,
-                prefer_lowp_gemm=config.prefer_lowp_gemm,
-                enable_triton=config.enable_triton,
-                memory_format=config.memory_format,
-            )
-
-            def ts_compiler(
-                m,
-                call_helper,
-                inputs,
-                kwarg_inputs,
-                freeze=False,
-                enable_cuda_graph=False,
-            ):
-                with torch.jit.optimized_execution(True):
-                    if freeze:
-                        # raw freeze causes Tensor reference leak
-                        # because the constant Tensors in the GraphFunction of
-                        # the compilation unit are never freed.
-                        m.eval()
-                        m = jit_utils.better_freeze(m)
-                    modify_model(m)
-
-                if enable_cuda_graph:
-                    m = make_dynamic_graphed_callable(m)
-                return m
-
-            unet_forward = lazy_trace(
+            unet_forward = LazyTraceModule(
                 unet_module,
-                ts_compiler=functools.partial(
-                    ts_compiler,
-                    freeze=config.enable_jit_freeze,
-                    enable_cuda_graph=enable_cuda_graph,
-                ),
+                unet_config=unet_config,
+                config=config,
+                patch_id=patch_id,
                 check_trace=False,
                 strict=False,
             )
 
             return unet_forward
 
-        return unet_module
+    return unet_module
