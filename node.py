@@ -55,8 +55,6 @@ class ApplyStableFastUnet:
 
     def apply_stable_fast(self, model):
         model = model.clone()
-        model_device = torch.device(
-            "cuda" if torch.cuda.is_available() else "cpu")
 
         config = gen_stable_fast_config()
 
@@ -76,10 +74,8 @@ class ApplyStableFastUnet:
 
         def to_(*args, **kwargs):
             to(*args, **kwargs)
-            nonlocal model_device, unet
             device = args[0] if len(args) > 0 else kwargs.get("device")
             if isinstance(device, torch.device):
-                model_device = device
                 if config.enable_cuda_graph or config.enable_jit_freeze:
                     if device.type == "cpu":
                         print(
@@ -89,8 +85,7 @@ class ApplyStableFastUnet:
                         config.enable_cuda_graph = False
                         config.enable_jit_freeze = False
                         unet.forward = original_unet_forward
-                        # Recompile it
-                        unet = compile_unet_(unet, config)
+                        model.model.diffusion_model = compile_unet_(unet, config)
                 else:
                     if hasattr(unet.forward, "_traced_modules"):
                         print(f"\33[93mTransfer model to {device}.\33[0m")
