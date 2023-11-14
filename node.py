@@ -62,7 +62,7 @@ class StableFastPatch:
                 model_function.__self__.model_config.unet_config,
                 self.config,
                 input_x.device,
-                id(self)
+                id(self),
             )
 
         if self.config.enable_cuda_graph or self.config.enable_jit_freeze:
@@ -70,7 +70,10 @@ class StableFastPatch:
                 input_x, timestep_, **c
             )
         else:
-            stable_fast_model_function, patch_id = self.stable_fast_model.get_traced_module(input_x, timestep_, **c)
+            (
+                stable_fast_model_function,
+                patch_id,
+            ) = self.stable_fast_model.get_traced_module(input_x, timestep_, **c)
             loaded = False
             if self.offload_flag:
                 if self.model_device != self.model.offload_device:
@@ -117,7 +120,7 @@ class ApplyStableFastUnet:
         return {
             "required": {
                 "model": ("MODEL",),
-                "enable_cuda_graph": ("BOOLEAN", {"default": True}), 
+                "enable_cuda_graph": ("BOOLEAN", {"default": True}),
             }
         }
 

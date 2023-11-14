@@ -1,5 +1,6 @@
 import functools
 import logging
+import copy
 
 import torch
 from sfast.compilers.stable_diffusion_pipeline_compiler import _modify_model
@@ -9,11 +10,21 @@ from sfast.jit.trace_helper import hash_arg, trace_with_kwargs
 
 logger = logging.getLogger()
 
+from .nodes_freelunch import FreeU_V2, FreeU
+from .openaimodel import PatchUNetModel
+
+PATCH_PATCH_MAP = {
+    "FreeU.patch.<locals>.output_block_patch": FreeU,
+    "FreeU_V2.patch.<locals>.output_block_patch": FreeU_V2,
+}
+
 
 class LazyTraceModule:
     traced_modules = {}
 
-    def __init__(self, func, *, unet_config=None, config=None,patch_id=None, **kwargs_) -> None:
+    def __init__(
+        self, func, *, unet_config=None, config=None, patch_id=None, **kwargs_
+    ) -> None:
         self.func = func
         self.unet_config = unet_config
         self.config = config
@@ -45,23 +56,59 @@ class LazyTraceModule:
             m = make_dynamic_graphed_callable(m)
         return m
 
-    def get_traced_module(self, *args, **kwargs):
+    def get_traced_module(self, *args, **kwargs):        
+        transformer_options = kwargs.get("transformer_options", {})
+        patches = copy.deepcopy(transformer_options.get("patches", {}))
+        output_block_patch = patches.get("output_block_patch", {})
+
+        output_block_patch_module = []
+        output_block_patch_module_parameter = []
+        for patch in output_block_patch:
+            if patch.__qualname__ in PATCH_PATCH_MAP:
+                patch, parameter = PATCH_PATCH_MAP[patch.__qualname__].from_closure(patch)
+                output_block_patch_module.append(patch)
+                output_block_patch_module_parameter.append(parameter)
+                # output_block_patch_module.append(torch.jit.script(patch))
+            else:
+                print(f"\33[93mWarning: Ignore patch {patch.__qualname__}.\33[0m")
+
+        patches["output_block_patch"] = output_block_patch_module_parameter
+        transformer_options["patches"] = patches
+
         key = (hash_arg(args), hash_arg(kwargs))
+
         patch_id = None
         traced_module = self.cuda_graph_modules.get(key)
-        if traced_module is None and not (self.config.enable_cuda_graph or self.config.enable_jit_freeze):
+        if traced_module is None and not (
+            self.config.enable_cuda_graph or self.config.enable_jit_freeze
+        ):
             traced_module_pair = self.traced_modules.get(key)
             if not traced_module_pair is None:
-                patch_id  =  traced_module_pair[1]
+                patch_id = traced_module_pair[1]
                 traced_module_pair[1] = self.patch_id
                 traced_module = traced_module_pair[0]
+
         if traced_module is None:
             logger.info(
                 f'Tracing {getattr(self.func, "__name__", self.func.__class__.__name__)}'
             )
-            traced_m, call_helper = trace_with_kwargs(
-                self.func, args, kwargs, **self.kwargs_
+            
+            self.func.module.diffusion_model = PatchUNetModel.cast_from(
+                self.func.module.diffusion_model
             )
+            try:
+                self.func.module.diffusion_model.set_output_block_patch(
+                    output_block_patch_module
+                )
+
+                traced_m, call_helper = trace_with_kwargs(
+                    self.func, args, kwargs, **self.kwargs_
+                )
+            finally:
+                self.func.module.diffusion_model = (
+                    self.func.module.diffusion_model.cast_to_base_model()
+                )
+
             traced_m = self.ts_compiler(traced_m)
             traced_module = call_helper(traced_m)
             if self.config.enable_cuda_graph or self.config.enable_jit_freeze:
@@ -69,6 +116,7 @@ class LazyTraceModule:
             else:
                 self.traced_modules[key] = [traced_module, self.patch_id]
                 patch_id = self.patch_id
+        
         return traced_module, patch_id
 
     def to_empty(self, device):
@@ -95,8 +143,8 @@ def compile_unet(unet_module, unet_config, config, device, patch_id):
                 unet_config=unet_config,
                 config=config,
                 patch_id=patch_id,
-                check_trace=False,
-                strict=False,
+                check_trace=True,
+                strict=True,
             )
 
             return unet_forward
