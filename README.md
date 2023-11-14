@@ -16,6 +16,9 @@ It can work with Lora, ControlNet and lcm. SD1.5, SDXL, and SSD-1B are supported
 Run ComfyUI with `--disable-cuda-malloc` may be possible to optimize the speed further.
 
 > [!NOTE]
+> FreeU is now supported experimentally, and you can try it using the `freeu` branch. Just use the comfy FreeU node normally.
+
+> [!NOTE]
 > 
 > - If you are using WSL, please do not install Triton for the time being due to bugs. 
 > - stable fast not work well with accelerate, So this node has no effect when the vram is low. For example: 6G vram card run SDXL.  
@@ -25,5 +28,5 @@ Run ComfyUI with `--disable-cuda-malloc` may be possible to optimize the speed f
 
 > [!NOTE]
 >
-> - stable fast will optimize the speed when generating images using the same model for the second time. if you switch models or Lora frequently, please consider bypass it temporarily.
+> - stable fast will optimize the speed when generating images using the same model for the second time. if you switch models or Lora frequently, please consider disable enable_cuda_graph.
 > - stable fast should be directly connected to ksampler, and it is better not to have other nodes between them.
