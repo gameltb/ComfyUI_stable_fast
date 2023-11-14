@@ -2,8 +2,8 @@ import time
 
 import torch
 
-from .module.stable_diffusion_pipeline_compiler import (CompilationConfig,
-                                                        compile_unet)
+from sfast.compilers.stable_diffusion_pipeline_compiler import (
+    CompilationConfig, compile_unet)
 
 
 def is_cuda_malloc_async():
@@ -35,91 +35,74 @@ def gen_stable_fast_config():
     # After capturing, the model only accepts one fixed image size.
     # If you want the model to be dynamic, don't enable it.
     config.enable_cuda_graph = True
-    # config.enable_jit_freeze = False
     return config
 
 
-class StableFastPatch:
-    def __init__(self, model, config):
-        self.model = model
-        self.config = config
-        self.stable_fast_model = None
-        self.offload_flag = False
-        self.model_device = torch.device("cpu")
-
-    def __call__(self, model_function, params):
-        input_x = params.get("input")
-        timestep_ = params.get("timestep")
-        c = params.get("c")
-
-        # disable with accelerate for now
-        if hasattr(model_function.__self__, "hf_device_map"):
-            return model_function(input_x, timestep_, **c)
-
-        if self.stable_fast_model is None:
-            self.stable_fast_model = compile_unet(
-                model_function, self.config, input_x.device
-            )
-
-        if self.config.enable_cuda_graph or self.config.enable_jit_freeze:
-            return self.stable_fast_model(input_x, timestep_, **c)(
-                input_x, timestep_, **c
-            )
-        else:
-            stable_fast_model_function = self.stable_fast_model(input_x, timestep_, **c)
-            if self.offload_flag:
-                if self.model_device != self.model.offload_device:
-                    # TODO: Find a way to reduce the loss caused by unwanted model transfers
-                    st = time.perf_counter()
-                    model_function.__self__.diffusion_model.to(
-                        self.model.offload_device
-                    )
-                    self.model_device = self.model.offload_device
-                    stable_fast_model_function.to(input_x.device)
-                    print(f"\33[93mOffload use {time.perf_counter() - st:.2f} seconds\33[0m")
-            return stable_fast_model_function(input_x, timestep_, **c)
-
-    def to(self, device):
-        if type(device) == torch.device:
-            self.model_device = device
-            if self.config.enable_cuda_graph or self.config.enable_jit_freeze:
-                if device.type == "cpu":
-                    # comfyui tell we should move to cpu. but we cannt do it with cuda graph and freeze now.
-                    del self.stable_fast_model
-                    self.stable_fast_model = None
-                    self.config.enable_cuda_graph = False
-                    self.config.enable_jit_freeze = False
-                    print(
-                        "\33[93mWarning: Your graphics card doesn't have enough video memory to keep the model. Disable stable fast cuda graph, Flexibility will be improved but speed will be lost.\33[0m"
-                    )
-            else:
-                if self.stable_fast_model != None and device.type == "cpu":
-                    self.offload_flag = True
-                    self.stable_fast_model.to(device)
-        return self
-
-
 class ApplyStableFastUnet:
+
     @classmethod
     def INPUT_TYPES(s):
         return {
             "required": {
-                "model": ("MODEL",),
+                "model": ("MODEL", ),
             }
         }
 
-    RETURN_TYPES = ("MODEL",)
+    RETURN_TYPES = ("MODEL", )
     FUNCTION = "apply_stable_fast"
 
     CATEGORY = "loaders"
 
     def apply_stable_fast(self, model):
+        model = model.clone()
+        model_device = torch.device(
+            "cuda" if torch.cuda.is_available() else "cpu")
+
         config = gen_stable_fast_config()
 
-        if config.memory_format is not None:
-            model.model.to(memory_format=config.memory_format)
+        assert hasattr(model.model, "diffusion_model")
+        unet = model.model.diffusion_model
+        # Keep the original forward function for recompilation
+        original_unet_forward = unet.forward
 
-        patch = StableFastPatch(model, config)
-        model_stable_fast = model.clone()
-        model_stable_fast.set_model_unet_function_wrapper(patch)
-        return (model_stable_fast,)
+        def compile_unet_(unet, config):
+            if not getattr(unet, "_has_compiled", False):
+                print("Compiling...")
+                compile_unet(unet, config)
+                unet._has_compiled = True
+            return unet
+
+        to = unet.to
+
+        def to_(*args, **kwargs):
+            to(*args, **kwargs)
+            nonlocal model_device, unet
+            device = args[0] if len(args) > 0 else kwargs.get("device")
+            if isinstance(device, torch.device):
+                model_device = device
+                if config.enable_cuda_graph or config.enable_jit_freeze:
+                    if device.type == "cpu":
+                        print(
+                            "\33[93mWarning: Your graphics card doesn't have enough video memory to keep the model. Disable stable fast cuda graph, Flexibility will be improved but speed will be lost.\33[0m"
+                        )
+                        # comfyui tell we should move to cpu. but we can't do it with cuda graph and freeze now.
+                        config.enable_cuda_graph = False
+                        config.enable_jit_freeze = False
+                        unet.forward = original_unet_forward
+                        # Recompile it
+                        unet = compile_unet_(unet, config)
+                else:
+                    if hasattr(unet.forward, "_traced_modules"):
+                        print(f"\33[93mTransfer model to {device}.\33[0m")
+                        traced_modules = unet._traced_modules
+                        for k, v in traced_modules.items():
+                            v.to(device)
+
+            return self
+
+        unet.to = to_
+
+        model.model.diffusion_model = compile_unet_(unet, config)
+        print("Stable fast mode enabled, even if you remove this loader, it will still take effect.")
+
+        return (model, )
