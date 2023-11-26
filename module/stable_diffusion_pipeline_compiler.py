@@ -1,6 +1,7 @@
 import copy
 import functools
 import logging
+from dataclasses import dataclass
 
 import torch
 from sfast.compilers.stable_diffusion_pipeline_compiler import _modify_model
@@ -21,6 +22,11 @@ PATCH_PATCH_MAP = {
     "PatchModelAddDownscale.patch.<locals>.output_block_patch" : PatchModelAddDownscale_output_block_patch,
 }
 
+@dataclass
+class TracedModuleCacheItem():
+    module : object
+    patch_id: int
+    device: str
 
 def gen_comfy_unet_cache_key(unet_config, args, kwargs, patch_module):
     key_kwargs = {}
@@ -112,15 +118,19 @@ class LazyTraceModule:
         key = gen_comfy_unet_cache_key(self.unet_config, args, kwargs, patch_module)
 
         patch_id = None
+        device = None
+        traced_module_cache = None
+
         traced_module = self.cuda_graph_modules.get(key)
         if traced_module is None and not (
             self.config.enable_cuda_graph or self.config.enable_jit_freeze
         ):
-            traced_module_pair = self.traced_modules.get(key)
-            if not traced_module_pair is None:
-                patch_id = traced_module_pair[1]
-                traced_module_pair[1] = self.patch_id
-                traced_module = traced_module_pair[0]
+            traced_module_cache = self.traced_modules.get(key)
+            if not traced_module_cache is None:
+                patch_id = traced_module_cache.patch_id                
+                device = traced_module_cache.device
+                traced_module_cache.patch_id = self.patch_id
+                traced_module = traced_module_cache.module
 
         if traced_module is None:
             logger.info(
@@ -151,14 +161,15 @@ class LazyTraceModule:
             if self.config.enable_cuda_graph or self.config.enable_jit_freeze:
                 self.cuda_graph_modules[key] = traced_module
             else:
-                self.traced_modules[key] = [traced_module, self.patch_id]
+                self.traced_modules[key] = TracedModuleCacheItem(module=traced_module,patch_id=self.patch_id,device=None)
                 patch_id = self.patch_id
 
-        return traced_module, patch_id
+        return traced_module, patch_id, device, traced_module_cache
 
     def to_empty(self, device):
         for v in self.traced_modules.values():
-            v[0].to_empty(device=device)
+            v.module.to_empty(device=device)
+            v.device = device
 
 
 def compile_unet(unet_module, unet_config, config, device, patch_id):

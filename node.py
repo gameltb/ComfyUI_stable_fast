@@ -43,8 +43,6 @@ class StableFastPatch:
         self.model = model
         self.config = config
         self.stable_fast_model = None
-        self.offload_flag = False
-        self.model_device = torch.device("cpu")
 
     def __call__(self, model_function, params):
         input_x = params.get("input")
@@ -73,24 +71,21 @@ class StableFastPatch:
             (
                 stable_fast_model_function,
                 patch_id,
+                device,
+                traced_module_cache,
             ) = self.stable_fast_model.get_traced_module(input_x, timestep_, **c)
-            need_load = False
-            if self.offload_flag:
-                if self.model_device != self.model.offload_device:
-                    self.model_device = self.model.offload_device
-                    need_load = True
-            if id(self) != patch_id or need_load:
+            if id(self) != patch_id or device == "meta":
                 model_function_module = to_module(model_function)
                 next(
                     next(stable_fast_model_function.children()).children()
                 ).load_state_dict(
                     model_function_module.state_dict(), strict=False, assign=True
                 )
+                traced_module_cache.device = None
             return stable_fast_model_function(input_x, timestep_, **c)
 
     def to(self, device):
         if type(device) == torch.device:
-            self.model_device = device
             if self.config.enable_cuda_graph or self.config.enable_jit_freeze:
                 if device.type == "cpu":
                     # comfyui tell we should move to cpu. but we cannt do it with cuda graph and freeze now.
@@ -103,7 +98,6 @@ class StableFastPatch:
                     )
             else:
                 if self.stable_fast_model != None and device.type == "cpu":
-                    self.offload_flag = True
                     self.stable_fast_model.to_empty("meta")
         return self
 
