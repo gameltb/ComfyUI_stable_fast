@@ -16,7 +16,7 @@ It can work with Lora, ControlNet and lcm. SD1.5, SDXL, and SSD-1B are supported
 Run ComfyUI with `--disable-cuda-malloc` may be possible to optimize the speed further.
 
 > [!NOTE]
-> FreeU is now supported experimentally, and you can try it using the `freeu` branch. Just use the comfy FreeU node normally.
+> FreeU is now supported experimentally, Just use the comfy FreeU node normally.
 
 > [!NOTE]
 > 
