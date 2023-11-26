@@ -12,10 +12,13 @@ logger = logging.getLogger()
 
 from .nodes_freelunch import FreeU, FreeU_V2
 from .openaimodel import PatchUNetModel
+from .nodes_model_downscale import PatchModelAddDownscale_input_block_patch,PatchModelAddDownscale_output_block_patch
 
 PATCH_PATCH_MAP = {
     "FreeU.patch.<locals>.output_block_patch": FreeU,
     "FreeU_V2.patch.<locals>.output_block_patch": FreeU_V2,
+    "PatchModelAddDownscale.patch.<locals>.input_block_patch" : PatchModelAddDownscale_input_block_patch,    
+    "PatchModelAddDownscale.patch.<locals>.output_block_patch" : PatchModelAddDownscale_output_block_patch,
 }
 
 
@@ -54,7 +57,7 @@ def convert_comfy_args(args, kwargs):
         for patch in patch_list:
             if patch.__qualname__ in PATCH_PATCH_MAP:
                 patch, parameter = PATCH_PATCH_MAP[patch.__qualname__].from_closure(
-                    patch
+                    patch, transformer_options
                 )
                 patch_module[patch_type_name].append(patch)
                 patch_module_parameter[patch_type_name].append(parameter)

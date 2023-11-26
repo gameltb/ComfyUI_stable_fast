@@ -74,12 +74,12 @@ class PatchUNetModel(UNetModel):
             h = apply_control(h, control, 'input')
 
             for patch_id ,input_block_patch_module in enumerate(self.input_block_patch[id]):
-                h, hsp = input_block_patch_module(h, hsp, transformer_patches.get("input_block_patch")[patch_id])
+                h = input_block_patch_module(h, transformer_patches.get("input_block_patch")[patch_id], transformer_options)
 
             hs.append(h)
 
             for patch_id ,input_block_patch_after_skip_module in enumerate(self.input_block_patch_after_skip[id]):
-                h, hsp = input_block_patch_after_skip_module(h, hsp, transformer_patches.get("input_block_patch_after_skip")[patch_id])
+                h = input_block_patch_after_skip_module(h, transformer_patches.get("input_block_patch_after_skip")[patch_id], transformer_options)
 
         transformer_options["block"] = ("middle", 0)
         h = forward_timestep_embed(self.middle_block, h, emb, context, transformer_options, time_context=time_context, num_video_frames=num_video_frames, image_only_indicator=image_only_indicator)
@@ -92,7 +92,7 @@ class PatchUNetModel(UNetModel):
             hsp = apply_control(hsp, control, 'output')
 
             for patch_id ,output_block_patch_module in enumerate(self.output_block_patch[id]):
-                h, hsp = output_block_patch_module(h, hsp, transformer_patches.get("output_block_patch")[patch_id])
+                h, hsp = output_block_patch_module(h, hsp, transformer_patches.get("output_block_patch")[patch_id], transformer_options)
 
             h = th.cat([h, hsp], dim=1)
             del hsp

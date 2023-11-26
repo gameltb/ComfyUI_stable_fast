@@ -29,7 +29,7 @@ class FreeU(torch.nn.Module):
         super().__init__()
         self.scale_map = scale_map
 
-    def forward(self, h, hsp, parameter):
+    def forward(self, h, hsp, parameter, transformer_options):
         for k, scale in zip(self.scale_map,parameter):
             if k == h.shape[1]:
                 h[:, : h.shape[1] // 2] = h[:, : h.shape[1] // 2] * scale[0]
@@ -37,7 +37,7 @@ class FreeU(torch.nn.Module):
         return h, hsp
 
     @staticmethod
-    def from_closure(closure):
+    def from_closure(closure, transformer_options):
         scale_dict = {}
         for var_name, var in zip(closure.__code__.co_freevars, closure.__closure__):
             if var_name == "scale_dict":
@@ -53,7 +53,7 @@ class FreeU_V2(torch.nn.Module):
         super().__init__()
         self.scale_map = scale_map
     
-    def forward(self, h, hsp, parameter):
+    def forward(self, h, hsp, parameter, transformer_options):
         for k, scale in zip(self.scale_map,parameter):
             if k == h.shape[1]:
                 hidden_mean = h.mean(1).unsqueeze(1)
@@ -73,7 +73,7 @@ class FreeU_V2(torch.nn.Module):
         return h, hsp
 
     @staticmethod
-    def from_closure(closure):
+    def from_closure(closure, transformer_options):
         scale_dict = {}
         for var_name, var in zip(closure.__code__.co_freevars, closure.__closure__):
             if var_name == "scale_dict":
