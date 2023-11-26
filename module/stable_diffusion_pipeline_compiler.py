@@ -1,6 +1,6 @@
+import copy
 import functools
 import logging
-import copy
 
 import torch
 from sfast.compilers.stable_diffusion_pipeline_compiler import _modify_model
@@ -10,13 +10,61 @@ from sfast.jit.trace_helper import hash_arg, trace_with_kwargs
 
 logger = logging.getLogger()
 
-from .nodes_freelunch import FreeU_V2, FreeU
+from .nodes_freelunch import FreeU, FreeU_V2
 from .openaimodel import PatchUNetModel
 
 PATCH_PATCH_MAP = {
     "FreeU.patch.<locals>.output_block_patch": FreeU,
     "FreeU_V2.patch.<locals>.output_block_patch": FreeU_V2,
 }
+
+
+def gen_comfy_unet_cache_key(unet_config, args, kwargs, patch_module):
+    key_kwargs = {}
+    for k, v in kwargs.items():
+        if k == "transformer_options":
+            if "patches" in v:
+                v = copy.deepcopy(v)
+                v.pop("patches")
+        key_kwargs[k] = v
+
+    patch_module_cache_key = {}
+    for patch_type_name, patch_list in patch_module.items():
+        patch_module_cache_key[patch_type_name] = []
+        for patch in patch_list:
+            patch_module_cache_key[patch_type_name].append(patch.gen_cache_key())
+    return (
+        hash_arg(unet_config),
+        hash_arg(args),
+        hash_arg(key_kwargs),
+        hash_arg(patch_module_cache_key),
+    )
+
+
+def convert_comfy_args(args, kwargs):
+    transformer_options = kwargs.get("transformer_options", {})
+    patches = copy.deepcopy(transformer_options.get("patches", {}))
+
+    patch_module = {}
+    patch_module_parameter = {}
+
+    for patch_type_name, patch_list in patches.items():
+        patch_module[patch_type_name] = []
+        patch_module_parameter[patch_type_name] = []
+        for patch in patch_list:
+            if patch.__qualname__ in PATCH_PATCH_MAP:
+                patch, parameter = PATCH_PATCH_MAP[patch.__qualname__].from_closure(
+                    patch
+                )
+                patch_module[patch_type_name].append(patch)
+                patch_module_parameter[patch_type_name].append(parameter)
+                # output_block_patch_module.append(torch.jit.script(patch))
+            else:
+                print(f"\33[93mWarning: Ignore patch {patch.__qualname__}.\33[0m")
+
+    transformer_options["patches"] = patch_module_parameter
+
+    return patch_module
 
 
 class LazyTraceModule:
@@ -56,26 +104,9 @@ class LazyTraceModule:
             m = make_dynamic_graphed_callable(m)
         return m
 
-    def get_traced_module(self, *args, **kwargs):        
-        transformer_options = kwargs.get("transformer_options", {})
-        patches = copy.deepcopy(transformer_options.get("patches", {}))
-        output_block_patch = patches.get("output_block_patch", {})
-
-        output_block_patch_module = []
-        output_block_patch_module_parameter = []
-        for patch in output_block_patch:
-            if patch.__qualname__ in PATCH_PATCH_MAP:
-                patch, parameter = PATCH_PATCH_MAP[patch.__qualname__].from_closure(patch)
-                output_block_patch_module.append(patch)
-                output_block_patch_module_parameter.append(parameter)
-                # output_block_patch_module.append(torch.jit.script(patch))
-            else:
-                print(f"\33[93mWarning: Ignore patch {patch.__qualname__}.\33[0m")
-
-        patches["output_block_patch"] = output_block_patch_module_parameter
-        transformer_options["patches"] = patches
-
-        key = (hash_arg(args), hash_arg(kwargs))
+    def get_traced_module(self, *args, **kwargs):
+        patch_module = convert_comfy_args(args, kwargs)
+        key = gen_comfy_unet_cache_key(self.unet_config, args, kwargs, patch_module)
 
         patch_id = None
         traced_module = self.cuda_graph_modules.get(key)
@@ -92,14 +123,12 @@ class LazyTraceModule:
             logger.info(
                 f'Tracing {getattr(self.func, "__name__", self.func.__class__.__name__)}'
             )
-            
+
             self.func.module.diffusion_model = PatchUNetModel.cast_from(
                 self.func.module.diffusion_model
             )
             try:
-                self.func.module.diffusion_model.set_output_block_patch(
-                    output_block_patch_module
-                )
+                self.func.module.diffusion_model.set_patch_module(patch_module)
 
                 traced_m, call_helper = trace_with_kwargs(
                     self.func, args, kwargs, **self.kwargs_
@@ -116,7 +145,7 @@ class LazyTraceModule:
             else:
                 self.traced_modules[key] = [traced_module, self.patch_id]
                 patch_id = self.patch_id
-        
+
         return traced_module, patch_id
 
     def to_empty(self, device):
@@ -130,9 +159,8 @@ def compile_unet(unet_module, unet_config, config, device, patch_id):
     with torch.no_grad():
         if config.enable_xformers:
             if config.enable_jit:
-                from sfast.utils.xformers_attention import (
-                    xformers_memory_efficient_attention,
-                )
+                from sfast.utils.xformers_attention import \
+                    xformers_memory_efficient_attention
                 from xformers import ops
 
                 ops.memory_efficient_attention = xformers_memory_efficient_attention

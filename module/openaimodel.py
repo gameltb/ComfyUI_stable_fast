@@ -22,13 +22,22 @@ class PatchUNetModel(UNetModel):
         return self
 
     def patch_init(self):
-        self.output_block_patch = nn.ModuleList()
+        self.input_block_patch = nn.ModuleList([nn.ModuleList() for _ in self.input_blocks])
+        self.input_block_patch_after_skip = nn.ModuleList([nn.ModuleList() for _ in self.input_blocks])
+        self.output_block_patch = nn.ModuleList([nn.ModuleList() for _ in self.output_blocks])
 
     def patch_deinit(self):
+        del self.input_block_patch 
+        del self.input_block_patch_after_skip
         del self.output_block_patch
 
-    def set_output_block_patch(self, output_block_patch):
-        self.output_block_patch = nn.ModuleList([nn.ModuleList(copy.deepcopy(output_block_patch)) for _ in self.output_blocks])
+    def set_patch_module(self, patch_module):
+        if "input_block_patch" in patch_module:
+            self.input_block_patch = nn.ModuleList([nn.ModuleList(copy.deepcopy(patch_module["input_block_patch"])) for _ in self.input_blocks])
+        if "input_block_patch_after_skip" in patch_module:
+            self.input_block_patch_after_skip = nn.ModuleList([nn.ModuleList(copy.deepcopy(patch_module["input_block_patch_after_skip"])) for _ in self.input_blocks])
+        if "output_block_patch" in patch_module:
+            self.output_block_patch = nn.ModuleList([nn.ModuleList(copy.deepcopy(patch_module["output_block_patch"])) for _ in self.output_blocks])
 
     def forward(self, x, timesteps=None, context=None, y=None, control=None, transformer_options={}, **kwargs):
         """
@@ -42,6 +51,10 @@ class PatchUNetModel(UNetModel):
         transformer_options["original_shape"] = list(x.shape)
         transformer_options["current_index"] = 0
         transformer_patches = transformer_options.get("patches", {})
+
+        num_video_frames = kwargs.get("num_video_frames", self.default_num_video_frames)
+        image_only_indicator = kwargs.get("image_only_indicator", self.default_image_only_indicator)
+        time_context = kwargs.get("time_context", None)
 
         assert (y is not None) == (
             self.num_classes is not None
@@ -57,13 +70,21 @@ class PatchUNetModel(UNetModel):
         h = x.type(self.dtype)
         for id, module in enumerate(self.input_blocks):
             transformer_options["block"] = ("input", id)
-            h = forward_timestep_embed(module, h, emb, context, transformer_options)
+            h = forward_timestep_embed(module, h, emb, context, transformer_options, time_context=time_context, num_video_frames=num_video_frames, image_only_indicator=image_only_indicator)
             h = apply_control(h, control, 'input')
+
+            for patch_id ,input_block_patch_module in enumerate(self.input_block_patch[id]):
+                h, hsp = input_block_patch_module(h, hsp, transformer_patches.get("input_block_patch")[patch_id])
+
             hs.append(h)
 
+            for patch_id ,input_block_patch_after_skip_module in enumerate(self.input_block_patch_after_skip[id]):
+                h, hsp = input_block_patch_after_skip_module(h, hsp, transformer_patches.get("input_block_patch_after_skip")[patch_id])
+
         transformer_options["block"] = ("middle", 0)
-        h = forward_timestep_embed(self.middle_block, h, emb, context, transformer_options)
+        h = forward_timestep_embed(self.middle_block, h, emb, context, transformer_options, time_context=time_context, num_video_frames=num_video_frames, image_only_indicator=image_only_indicator)
         h = apply_control(h, control, 'middle')
+
 
         for id, module in enumerate(self.output_blocks):
             transformer_options["block"] = ("output", id)
@@ -72,12 +93,6 @@ class PatchUNetModel(UNetModel):
 
             for patch_id ,output_block_patch_module in enumerate(self.output_block_patch[id]):
                 h, hsp = output_block_patch_module(h, hsp, transformer_patches.get("output_block_patch")[patch_id])
-                # h, hsp = output_block_patch_module(h, hsp, transformer_options)
-
-            # if "output_block_patch" in transformer_patches:
-            #     patch = transformer_patches["output_block_patch"]
-            #     for p in patch:
-            #         h, hsp = p(h, hsp, transformer_options)
 
             h = th.cat([h, hsp], dim=1)
             del hsp
@@ -85,7 +100,7 @@ class PatchUNetModel(UNetModel):
                 output_shape = hs[-1].shape
             else:
                 output_shape = None
-            h = forward_timestep_embed(module, h, emb, context, transformer_options, output_shape)
+            h = forward_timestep_embed(module, h, emb, context, transformer_options, output_shape, time_context=time_context, num_video_frames=num_video_frames, image_only_indicator=image_only_indicator)
         h = h.type(x.dtype)
         if self.predict_codebook_ids:
             return self.id_predictor(h)

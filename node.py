@@ -74,18 +74,12 @@ class StableFastPatch:
                 stable_fast_model_function,
                 patch_id,
             ) = self.stable_fast_model.get_traced_module(input_x, timestep_, **c)
-            loaded = False
+            need_load = False
             if self.offload_flag:
                 if self.model_device != self.model.offload_device:
-                    model_function_module = to_module(model_function)
-                    next(
-                        next(stable_fast_model_function.children()).children()
-                    ).load_state_dict(
-                        model_function_module.state_dict(), strict=False, assign=True
-                    )
                     self.model_device = self.model.offload_device
-                    loaded = True
-            if id(self) != patch_id and not loaded:
+                    need_load = True
+            if id(self) != patch_id or need_load:
                 model_function_module = to_module(model_function)
                 next(
                     next(stable_fast_model_function.children()).children()

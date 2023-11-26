@@ -43,13 +43,16 @@ class FreeU(torch.nn.Module):
             if var_name == "scale_dict":
                 scale_dict = copy.deepcopy(var.cell_contents)
                 break
-        return FreeU(list(scale_dict.keys())), list(scale_dict.values())
-
+        return FreeU(list(scale_dict.keys())), torch.Tensor(list(scale_dict.values()))
+    
+    def gen_cache_key(self):
+        return [self.__class__.__name__,self.scale_map]
+    
 class FreeU_V2(torch.nn.Module):
     def __init__(self, scale_map):
         super().__init__()
         self.scale_map = scale_map
-
+    
     def forward(self, h, hsp, parameter):
         for k, scale in zip(self.scale_map,parameter):
             if k == h.shape[1]:
@@ -76,4 +79,7 @@ class FreeU_V2(torch.nn.Module):
             if var_name == "scale_dict":
                 scale_dict = copy.deepcopy(var.cell_contents)
                 break
-        return FreeU(list(scale_dict.keys())), list(scale_dict.values())
+        return FreeU_V2(list(scale_dict.keys())), torch.Tensor(list(scale_dict.values()))
+
+    def gen_cache_key(self):
+        return [self.__class__.__name__,self.scale_map]
