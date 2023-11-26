@@ -124,18 +124,23 @@ class LazyTraceModule:
                 f'Tracing {getattr(self.func, "__name__", self.func.__class__.__name__)}'
             )
 
-            self.func.module.diffusion_model = PatchUNetModel.cast_from(
-                self.func.module.diffusion_model
-            )
-            try:
-                self.func.module.diffusion_model.set_patch_module(patch_module)
+            if len(patch_module) > 0:
+                self.func.module.diffusion_model = PatchUNetModel.cast_from(
+                    self.func.module.diffusion_model
+                )
+                try:
+                    self.func.module.diffusion_model.set_patch_module(patch_module)
 
+                    traced_m, call_helper = trace_with_kwargs(
+                        self.func, args, kwargs, **self.kwargs_
+                    )
+                finally:
+                    self.func.module.diffusion_model = (
+                        self.func.module.diffusion_model.cast_to_base_model()
+                    )
+            else:
                 traced_m, call_helper = trace_with_kwargs(
                     self.func, args, kwargs, **self.kwargs_
-                )
-            finally:
-                self.func.module.diffusion_model = (
-                    self.func.module.diffusion_model.cast_to_base_model()
                 )
 
             traced_m = self.ts_compiler(traced_m)
@@ -159,8 +164,9 @@ def compile_unet(unet_module, unet_config, config, device, patch_id):
     with torch.no_grad():
         if config.enable_xformers:
             if config.enable_jit:
-                from sfast.utils.xformers_attention import \
-                    xformers_memory_efficient_attention
+                from sfast.utils.xformers_attention import (
+                    xformers_memory_efficient_attention,
+                )
                 from xformers import ops
 
                 ops.memory_efficient_attention = xformers_memory_efficient_attention
