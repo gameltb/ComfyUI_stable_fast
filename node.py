@@ -1,8 +1,7 @@
 import torch
 from sfast.compilers.stable_diffusion_pipeline_compiler import CompilationConfig
-from sfast.jit.trace_helper import to_module
 
-from .module.stable_diffusion_pipeline_compiler import compile_unet
+from .module.stable_diffusion_pipeline_compiler import build_lazy_trace_module
 
 
 def is_cuda_malloc_async():
@@ -54,35 +53,15 @@ class StableFastPatch:
             return model_function(input_x, timestep_, **c)
 
         if self.stable_fast_model is None:
-            model_function_module = to_module(model_function)
-            self.stable_fast_model = compile_unet(
-                model_function_module,
-                model_function.__self__.model_config.unet_config,
+            self.stable_fast_model = build_lazy_trace_module(
                 self.config,
                 input_x.device,
                 id(self),
             )
 
-        if self.config.enable_cuda_graph or self.config.enable_jit_freeze:
-            return self.stable_fast_model.get_traced_module(input_x, timestep_, **c)[0](
-                input_x, timestep_, **c
-            )
-        else:
-            (
-                stable_fast_model_function,
-                patch_id,
-                device,
-                traced_module_cache,
-            ) = self.stable_fast_model.get_traced_module(input_x, timestep_, **c)
-            if id(self) != patch_id or device == "meta":
-                model_function_module = to_module(model_function)
-                next(
-                    next(stable_fast_model_function.children()).children()
-                ).load_state_dict(
-                    model_function_module.state_dict(), strict=False, assign=True
-                )
-                traced_module_cache.device = None
-            return stable_fast_model_function(input_x, timestep_, **c)
+        return self.stable_fast_model.get_traced_module(
+            model_function, input_x, timestep_, **c
+        )(input_x, timestep_, **c)
 
     def to(self, device):
         if type(device) == torch.device:
@@ -98,7 +77,7 @@ class StableFastPatch:
                     )
             else:
                 if self.stable_fast_model != None and device.type == "cpu":
-                    self.stable_fast_model.to_empty("meta")
+                    self.stable_fast_model.to_empty()
         return self
 
 
