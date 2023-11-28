@@ -39,7 +39,7 @@ def gen_comfy_unet_cache_key(unet_config, args, kwargs, patch_module):
         if k == "transformer_options":
             nv = {}
             for tk, tv in v.items():
-                if not "patches" == tk:
+                if not tk in ("patches"):  # ,"cond_or_uncond"
                     nv[tk] = tv
             v = nv
         key_kwargs[k] = v
@@ -96,6 +96,7 @@ class LazyTraceModule:
             enable_cnn_optimization=config.enable_cnn_optimization,
             prefer_lowp_gemm=config.prefer_lowp_gemm,
             enable_triton=config.enable_triton,
+            enable_triton_reshape=config.enable_triton,
             memory_format=config.memory_format,
         )
         self.cuda_graph_modules = {}
