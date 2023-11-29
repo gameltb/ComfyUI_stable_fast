@@ -40,5 +40,5 @@ pip install onnx-graphsurgeon polygraphy --extra-index-url https://pypi.ngc.nvid
 ```
 ## Usage
 
-Run ComfyUI with `--disable-xformers` and use `Apply TensorRT Unet` like `"Apply StableFast Unet`.  
+Run ComfyUI with `--disable-xformers` and use `Apply TensorRT Unet` like `Apply StableFast Unet`.  
 The Engine will be cached in `tensorrt_engine_cache`, Each is about 2MB.

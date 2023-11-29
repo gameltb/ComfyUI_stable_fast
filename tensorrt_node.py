@@ -75,6 +75,28 @@ def gen_onnx_module(model_function, args, input_names, output_names, onnx_output
     )
 
 
+def gen_control_params(control_params):
+    root_name = "control"
+    control_params_name_list = []
+    control_params_name_list_shape_info = {}
+    control_params_map = {}
+    for key in control_params:
+        for i, v in enumerate(control_params[key]):
+            control_params_name = f"{root_name}_{key}_{i}"
+            control_params_name_list.append(control_params_name)
+            control_params_name_list_shape_info[control_params_name] = [
+                tuple(v.shape),
+                tuple(v.shape),
+                tuple(v.shape),
+            ]
+            control_params_map[control_params_name] = v
+    return (
+        control_params_name_list,
+        control_params_name_list_shape_info,
+        control_params_map,
+    )
+
+
 class TensorRTPatch:
     tensor_rt_engine_cache = {}
 
@@ -109,7 +131,7 @@ class TensorRTPatch:
                 ],
             }
 
-            for kwarg_name in ["c_concat", "c_crossattn", "control"]:
+            for kwarg_name in ["c_concat", "c_crossattn"]:
                 kwarg = c.get(kwarg_name, None)
                 args.append(kwarg)
                 if kwarg != None:
@@ -119,6 +141,15 @@ class TensorRTPatch:
                         tuple(kwarg.shape),
                         tuple(kwarg.shape),
                     ]
+
+            control = c.get("control", None)
+            args.append(control)
+            if control != None:
+                name_list, shape_info, _ = gen_control_params(control)
+                input_names.extend(name_list)
+                profile_shape_info.update(shape_info)
+
+            args.append({})
 
             unet_config = model_function.__self__.model_config.unet_config
 
@@ -149,9 +180,14 @@ class TensorRTPatch:
             "input_x": input_x.float(),
             "timestep": timestep_.float(),
         }
-        for kwarg_name in ["c_concat", "c_crossattn", "control"]:
+        for kwarg_name in ["c_concat", "c_crossattn"]:
             if kwarg_name in c:
                 feed_dict[kwarg_name] = c[kwarg_name].float()
+
+        control = c.get("control", None)
+        if control != None:
+            _, _, control_params = gen_control_params(control)
+            feed_dict.update(control_params)
 
         tmp_buff = torch.empty(
             self.engine_vram_req, dtype=torch.uint8, device=input_x.device
