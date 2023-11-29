@@ -16,7 +16,8 @@ It can work with Lora, ControlNet and lcm. SD1.5, SDXL, and SSD-1B are supported
 Run ComfyUI with `--disable-cuda-malloc` may be possible to optimize the speed further.
 
 > [!NOTE]
-> FreeU and PatchModelAddDownscale are now supported experimentally, Just use the comfy node normally.
+> - FreeU and PatchModelAddDownscale are now supported experimentally, Just use the comfy node normally.
+> - Although this repo was created for stable_fast, I found it to work well with TensorRT, so I added an experimental new node at branch `tensorrt`. You can try it as you want.
 
 > [!NOTE]
 > 
