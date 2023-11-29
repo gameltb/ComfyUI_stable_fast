@@ -33,7 +33,7 @@ class TracedModuleCacheItem:
     device: str
 
 
-def gen_comfy_unet_cache_key(unet_config, args, kwargs, patch_module):
+def gen_comfy_unet_cache_key(unet_config, args, kwargs, patch_module, shape_info={}):
     key_kwargs = {}
     for k, v in kwargs.items():
         if k == "transformer_options":
@@ -55,6 +55,7 @@ def gen_comfy_unet_cache_key(unet_config, args, kwargs, patch_module):
         hash_arg(args),
         hash_arg(key_kwargs),
         hash_arg(patch_module_cache_key),
+        hash_arg(shape_info),
     )
 
 

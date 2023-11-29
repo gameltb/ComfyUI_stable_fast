@@ -28,7 +28,9 @@ from polygraphy.backend.trt import (
     engine_from_bytes,
     engine_from_network,
     network_from_onnx_path,
-    save_engine
+    save_engine,
+    network_from_onnx_bytes,
+    bytes_from_engine
 )
 from polygraphy.logger import G_LOGGER
 import tensorrt as trt
@@ -37,6 +39,7 @@ from safetensors.numpy import save_file, load_file
 from logging import error, warning
 from tqdm import tqdm
 import copy 
+import zstandard
 
 TRT_LOGGER = trt.Logger(trt.Logger.VERBOSE)
 G_LOGGER.module_severity = G_LOGGER.VERBOSE
@@ -179,6 +182,99 @@ class Engine:
         del self.context
         del self.buffers
         del self.tensors
+
+    def refit_simple(self, onnx_path, dump_refit_path=None, reset_zero=False):
+        def convert_int64(arr):
+            # TODO: smarter conversion
+            if len(arr.shape) == 0:
+                return np.int32(arr)
+            return arr
+
+        def add_to_map(refit_dict, name, values):
+            if name in refit_dict:
+                assert refit_dict[name] is None
+                if values.dtype == np.int64:
+                    values = convert_int64(values)
+                refit_dict[name] = values
+
+        print(f"Refitting TensorRT engine with {onnx_path} weights")
+
+        # Construct refit dictionary
+        refit_dict = {}
+        refitter = trt.Refitter(self.engine, TRT_LOGGER)
+        all_weights = refitter.get_all()
+        for layer_name, role in zip(all_weights[0], all_weights[1]):
+            # for specialized roles, use a unique name in the map:
+            if role == trt.WeightsRole.KERNEL:
+                name = layer_name + "_TRTKERNEL"
+            elif role == trt.WeightsRole.BIAS:
+                name = layer_name + "_TRTBIAS"
+            else:
+                name = layer_name
+
+            assert name not in refit_dict, "Found duplicate layer: " + name
+            refit_dict[name] = None
+
+        for n in gs.import_onnx(onnx.load(onnx_path)).toposort().nodes:
+            # Constant nodes in ONNX do not have inputs but have a constant output
+            if n.op == "Constant":
+                name = n.outputs[0].name
+                print(f"Add Constant {name}\n")
+                try:
+                    add_to_map(refit_dict, name, n.outputs[0].values)
+                except:
+                    error(f"Failed to add Constant {name}\n")
+
+            # Handle scale and bias weights
+            elif n.op == "Conv":
+                if n.inputs[1].__class__ == gs.Constant:
+                    name = n.name + "_TRTKERNEL"
+                    try:
+                        add_to_map(refit_dict, name, n.inputs[1].values)
+                    except:
+                        error(f"Failed to add Conv {name}\n")
+
+                if n.inputs[2].__class__ == gs.Constant:
+                    name = n.name + "_TRTBIAS"
+                    try:
+                        add_to_map(refit_dict, name, n.inputs[2].values)
+                    except:
+                        error(f"Failed to add Conv {name}\n")
+
+            # For all other nodes: find node inputs that are initializers (AKA gs.Constant)
+            else:
+                for inp in n.inputs:
+                    name = inp.name
+                    if inp.__class__ == gs.Constant:
+                        add_to_map(refit_dict, name, inp.values)
+
+        if dump_refit_path is not None:
+            print("Finished refit. Dumping result to disk.")
+            save_file(
+                refit_dict, dump_refit_path
+            )  # TODO need to come up with delta system to save only changed weights
+            return
+
+        for layer_name, weights_role in zip(all_weights[0], all_weights[1]):
+            if weights_role == trt.WeightsRole.KERNEL:
+                custom_name = layer_name + "_TRTKERNEL"
+            elif weights_role == trt.WeightsRole.BIAS:
+                custom_name = layer_name + "_TRTBIAS"
+            else:
+                custom_name = layer_name
+
+            # Skip refitting Trilu for now; scalar weights of type int64 value 1 - for clip model
+            if layer_name.startswith("onnx::Trilu"):
+                continue
+
+            if refit_dict[custom_name] is not None:
+                refitter.set_weights(layer_name, weights_role, refit_dict[custom_name] if not reset_zero else np.zeros_like(refit_dict[custom_name]))
+            else:
+                print(f"[W] No refit weights for layer: {layer_name}")
+
+        if not refitter.refit_cuda_engine():
+            print("Failed to refit!")
+            # exit(0)
 
     def refit(self, onnx_path, onnx_refit_path, dump_refit_path=None):
         def convert_int64(arr):
@@ -364,7 +460,7 @@ class Engine:
         timing_cache=None,
         update_output_names=None,
     ):
-        print(f"Building TensorRT engine for {onnx_path}: {self.engine_path}")
+        print(f"Building TensorRT engine for : {self.engine_path}")
         p = [Profile()]
         if input_profile:
             p = [Profile() for i in range(len(input_profile))]
@@ -377,9 +473,14 @@ class Engine:
         if not enable_all_tactics:
             config_kwargs["tactic_sources"] = []
 
-        network = network_from_onnx_path(
+        if type(onnx_path) == bytes:
+            network = network_from_onnx_bytes(
             onnx_path, flags=[trt.OnnxParserFlag.NATIVE_INSTANCENORM]
-        )
+            )
+        else:
+            network = network_from_onnx_path(
+                onnx_path, flags=[trt.OnnxParserFlag.NATIVE_INSTANCENORM]
+            )
         if update_output_names:
             print(f"Updating network outputs to {update_output_names}")
             network = ModifyNetworkOutputs(network, update_output_names)
@@ -390,6 +491,9 @@ class Engine:
 
         config.set_flag(trt.BuilderFlag.FP16) if fp16 else None
         config.set_flag(trt.BuilderFlag.REFIT) if enable_refit else None
+
+        config.set_preview_feature(trt.PreviewFeature.DISABLE_EXTERNAL_TACTIC_SOURCES_FOR_CORE_0805,False)
+        # config.set_tactic_sources(1 << int(trt.TacticSource.CUBLAS) | 1 << int(trt.TacticSource.CUBLAS_LT))
 
         cache = None
         try:
@@ -414,7 +518,7 @@ class Engine:
             config.add_optimization_profile(calib_profile)
 
         try:
-            engine = engine_from_network(
+            self.engine = engine_from_network(
                 network,
                 config,
                 save_timing_cache=timing_cache,
@@ -422,16 +526,17 @@ class Engine:
         except Exception as e:
             error(f"Failed to build engine: {e}")
             return 1
-        try:
-            save_engine(engine, path=self.engine_path)
-        except Exception as e:
-            error(f"Failed to save engine: {e}")
-            return 1
         return 0
+    
+    def save_engine(self):
+        print(f"Saveing TensorRT engine: {self.engine_path}")
+        with zstandard.open(self.engine_path,"wb") as zwfp:
+            zwfp.write(bytes_from_engine(self.engine))
 
     def load(self):
         print(f"Loading TensorRT engine: {self.engine_path}")
-        self.engine = engine_from_bytes(bytes_from_path(self.engine_path))
+        with zstandard.open(self.engine_path,"rb") as zrfp:
+            self.engine = engine_from_bytes(zrfp.read())
 
     def activate(self, reuse_device_memory=None):
         if reuse_device_memory:
@@ -451,6 +556,8 @@ class Engine:
             dtype = trt.nptype(self.engine.get_binding_dtype(binding))
             if self.engine.binding_is_input(binding):
                 self.context.set_binding_shape(idx, shape)
+            if self.engine.binding_is_input(binding) and not binding in shape_dict:
+                continue
             tensor = torch.empty(
                 tuple(shape), dtype=numpy_to_torch_dtype_dict[dtype]
             ).to(device=device)
@@ -471,6 +578,14 @@ class Engine:
             raise ValueError("ERROR: inference failed.")
         nvtx.range_pop()
         return self.tensors
+    
+    def set_static_dict_input(self, feed_dict):
+        nvtx.range_push("set_tensors")
+        for name, tensor in feed_dict.items():
+            dtype = trt.nptype(self.engine.get_binding_dtype(name))
+            feed_dict[name] = tensor.to(dtype=numpy_to_torch_dtype_dict[dtype])
+            self.context.set_tensor_address(name, feed_dict[name].data_ptr())
+        nvtx.range_pop()
 
     def __str__(self):
         out = ""

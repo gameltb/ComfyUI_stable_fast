@@ -1,6 +1,10 @@
 import torch
 import os
 from torch.cuda import nvtx
+from dataclasses import dataclass
+from io import BytesIO
+import hashlib
+import time
 
 from .module.stable_diffusion_pipeline_compiler import (
     gen_comfy_unet_cache_key,
@@ -9,64 +13,75 @@ from .module.stable_diffusion_pipeline_compiler import (
 )
 from .module.tensorrt_utilities import Engine
 
-NO_PARAMS_ONNX_PATH = "/tmp/test_NO_PARAMS.onnx"
-PARAMS_ONNX_PATH = "/tmp/test_PARAMS.onnx"
-TRT_PATH = "/tmp/test.trt"
 
-def gen_onnx_module(model_function, input_x, timestep_, **kwargs):
-    unet_config = model_function.__self__.model_config.unet_config
+@dataclass
+class TensorRTEngineCacheItem:
+    engine: object
+    patch_id: int
+    device: str
 
-    patch_module = convert_comfy_args((input_x, timestep_), kwargs)
-    key = gen_comfy_unet_cache_key(
-        unet_config, (input_x, timestep_), kwargs, patch_module
+
+TIMING_CACHE_PATH = os.path.join(
+    os.path.dirname(__file__), "tensorrt_engine_cache", "timing_cache.cache"
+)
+if not os.path.exists(TIMING_CACHE_PATH):
+    with open(TIMING_CACHE_PATH, "wb") as f:
+        pass
+
+
+def get_key_hash(key):
+    return hashlib.sha256(str(key).encode()).hexdigest()
+
+
+def get_engine_path(key):
+    engine_cache_dir = os.path.join(os.path.dirname(__file__), "tensorrt_engine_cache")
+    if not os.path.exists(engine_cache_dir):
+        os.makedirs(engine_cache_dir, exist_ok=True)
+    basename = hashlib.sha256(str(key).encode()).hexdigest()
+    return os.path.join(engine_cache_dir, basename + ".trt")
+
+
+def get_engine_with_cache(key):
+    engine_path = get_engine_path(key)
+    if os.path.exists(engine_path):
+        return Engine(engine_path)
+    return None
+
+
+def gen_engine(key, onnx_buff):
+    engine = Engine(get_engine_path(key))
+    s = time.time()
+    engine.build(
+        onnx_buff, fp16=True, enable_refit=True, timing_cache=TIMING_CACHE_PATH
     )
+    e = time.time()
+    print(f"Time taken to build: {e-s}s")
+    return engine
 
+
+def gen_onnx_module(model_function, args, input_names, output_names, onnx_output):
     model_function_module = to_module(model_function)
-
-    args = [input_x, timestep_]
-    input_names = ["input_x", "timestep"]
-
-    for kwarg_name in ["c_concat", "c_crossattn", "control"]:
-        kwarg = kwargs.get(kwarg_name, None)
-        args.append(kwarg)
-        if kwarg != None:
-            input_names.append(kwarg_name)
-
     # script_module = torch.jit.trace(model_function, example_inputs=args, example_kwarg_inputs=kwargs)
 
-    if not os.path.exists(NO_PARAMS_ONNX_PATH):
-        torch.onnx.export(
-            model_function_module,
-            (*args,),
-            NO_PARAMS_ONNX_PATH,
-            export_params=False,
-            verbose=True,
-            do_constant_folding=True,
-            input_names=input_names,
-            output_names=["output"],
-        )
-
-    if not os.path.exists(PARAMS_ONNX_PATH):
-        torch.onnx.export(
-            model_function_module,
-            (*args,),
-            PARAMS_ONNX_PATH,
-            export_params=True,
-            verbose=True,
-            do_constant_folding=True,
-            input_names=input_names,
-            output_names=["output"],
-        )
+    torch.onnx.export(
+        model_function_module,
+        (*args,),
+        onnx_output,
+        export_params=True,
+        verbose=True,
+        do_constant_folding=True,
+        input_names=input_names,
+        output_names=output_names,
+    )
 
 
-class TensorrtPatch:
+class TensorRTPatch:
+    tensor_rt_engine_cache = {}
+
     def __init__(self, model, config):
         self.model = model
         self.config = config
-        self.stable_fast_model = None
-
-        if os.path.exists(TRT_PATH):
-            self.engine = Engine(TRT_PATH)
+        self.engine = None
 
     def __call__(self, model_function, params):
         input_x = params.get("input")
@@ -77,7 +92,57 @@ class TensorrtPatch:
         if hasattr(model_function.__self__, "hf_device_map"):
             return model_function(input_x, timestep_, **c)
 
-        gen_onnx_module(model_function, input_x, timestep_, **c)
+        if self.engine == None:
+            args = [input_x, timestep_]
+            input_names = ["input_x", "timestep"]
+            output_names = ["output"]
+            profile_shape_info = {
+                "input_x": [
+                    tuple(input_x.shape),
+                    tuple(input_x.shape),
+                    tuple(input_x.shape),
+                ],
+                "timestep": [
+                    tuple(timestep_.shape),
+                    tuple(timestep_.shape),
+                    tuple(timestep_.shape),
+                ],
+            }
+
+            for kwarg_name in ["c_concat", "c_crossattn", "control"]:
+                kwarg = c.get(kwarg_name, None)
+                args.append(kwarg)
+                if kwarg != None:
+                    input_names.append(kwarg_name)
+                    profile_shape_info[kwarg_name] = [
+                        tuple(kwarg.shape),
+                        tuple(kwarg.shape),
+                        tuple(kwarg.shape),
+                    ]
+
+            unet_config = model_function.__self__.model_config.unet_config
+
+            patch_module = convert_comfy_args((input_x, timestep_), c)
+            key = gen_comfy_unet_cache_key(
+                unet_config, (input_x, timestep_), c, patch_module, profile_shape_info
+            )
+
+            self.engine = get_engine_with_cache(key)
+            onnx_buff = BytesIO()
+            gen_onnx_module(model_function, args, input_names, output_names, onnx_buff)
+            model_function.__self__.to(device="cpu")
+
+            if self.engine == None:
+                self.engine = gen_engine(key, onnx_buff.getvalue())
+                onnx_buff.seek(0)
+                self.engine.refit_simple(onnx_buff, reset_zero=True)
+                self.engine.save_engine()
+                self.deactivate()
+                self.engine = get_engine_with_cache(key)
+
+            self.activate()
+            onnx_buff.seek(0)
+            self.engine.refit_simple(onnx_buff)
 
         nvtx.range_push("forward")
         feed_dict = {
@@ -88,10 +153,10 @@ class TensorrtPatch:
             if kwarg_name in c:
                 feed_dict[kwarg_name] = c[kwarg_name].float()
 
-        tmp = torch.empty(
+        tmp_buff = torch.empty(
             self.engine_vram_req, dtype=torch.uint8, device=input_x.device
         )
-        self.engine.context.device_memory = tmp.data_ptr()
+        self.engine.context.device_memory = tmp_buff.data_ptr()
         self.cudaStream = torch.cuda.current_stream().cuda_stream
         self.engine.allocate_buffers(feed_dict)
 
@@ -107,15 +172,15 @@ class TensorrtPatch:
         self.engine.activate(True)
 
     def deactivate(self):
-        self.shape_hash = 0
         del self.engine
+        self.engine = None
 
     def to(self, device):
         if type(device) == torch.device:
-            if device.type == "cpu":
+            if device.type == "cpu" and self.engine != None:
                 self.deactivate()
-            else:
-                self.activate()
+            # else:
+            #     self.activate()
         return self
 
 
@@ -134,7 +199,7 @@ class ApplyTensorRTUnet:
     CATEGORY = "loaders"
 
     def apply_tensorrt(self, model):
-        patch = TensorrtPatch(model, None)
+        patch = TensorRTPatch(model, None)
         model_stable_fast = model.clone()
         model_stable_fast.set_model_unet_function_wrapper(patch)
         return (model_stable_fast,)
