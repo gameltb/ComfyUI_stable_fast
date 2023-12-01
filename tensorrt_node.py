@@ -21,6 +21,11 @@ class TensorRTEngineCacheItem:
     device: str
 
 
+@dataclass
+class TensorRTEngineConfig:
+    enable_cuda_graph: bool
+
+
 TIMING_CACHE_PATH = os.path.join(
     os.path.dirname(__file__), "tensorrt_engine_cache", "timing_cache.cache"
 )
@@ -41,10 +46,10 @@ def get_engine_path(key):
     return os.path.join(engine_cache_dir, basename + ".trt")
 
 
-def get_engine_with_cache(key):
+def get_engine_with_cache(key, config):
     engine_path = get_engine_path(key)
     if os.path.exists(engine_path):
-        return Engine(engine_path)
+        return Engine(engine_path, enable_cuda_graph=config.enable_cuda_graph)
     return None
 
 
@@ -172,7 +177,7 @@ class TensorRTPatch:
                 unet_config, (input_x, timestep_), c, patch_module, profile_shape_info
             )
 
-            self.engine = get_engine_with_cache(key)
+            self.engine = get_engine_with_cache(key, self.config)
 
             if self.onnx_buff == None:
                 self.onnx_buff = BytesIO()
@@ -196,7 +201,7 @@ class TensorRTPatch:
                 self.engine.refit_simple(self.onnx_buff, reset_zero=True)
                 self.engine.save_engine()
                 self.deactivate()
-                self.engine = get_engine_with_cache(key)
+                self.engine = get_engine_with_cache(key, self.config)
 
             nvtx.range_push("load engine")
             self.activate()
@@ -208,11 +213,8 @@ class TensorRTPatch:
             nvtx.range_pop()
 
         nvtx.range_push("forward")
-        tmp_buff = torch.empty(
-            self.engine_vram_req, dtype=torch.uint8, device=input_x.device
-        )
-        self.engine.context.device_memory = tmp_buff.data_ptr()
-        self.cudaStream = torch.cuda.current_stream().cuda_stream
+
+        self.cudaStream = torch.cuda.current_stream()
         self.engine.allocate_buffers(feed_dict)
 
         out = self.engine.infer(feed_dict, self.cudaStream)["output"]
@@ -248,6 +250,7 @@ class ApplyTensorRTUnet:
         return {
             "required": {
                 "model": ("MODEL",),
+                "enable_cuda_graph": ("BOOLEAN", {"default": True}),
             }
         }
 
@@ -256,8 +259,9 @@ class ApplyTensorRTUnet:
 
     CATEGORY = "loaders"
 
-    def apply_tensorrt(self, model):
-        patch = TensorRTPatch(model, None)
+    def apply_tensorrt(self, model, enable_cuda_graph):
+        config = TensorRTEngineConfig(enable_cuda_graph=enable_cuda_graph)
+        patch = TensorRTPatch(model, config)
         model_stable_fast = model.clone()
         model_stable_fast.set_model_unet_function_wrapper(patch)
         return (model_stable_fast,)

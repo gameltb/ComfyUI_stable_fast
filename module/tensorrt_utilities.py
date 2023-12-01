@@ -15,31 +15,33 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-import torch
-from torch.cuda import nvtx
+import copy
 from collections import OrderedDict
+from enum import Enum, auto
+from logging import error, warning
+
 import numpy as np
 import onnx
 import onnx_graphsurgeon as gs
-from polygraphy.backend.common import bytes_from_path
+import tensorrt as trt
+import torch
+import zstandard
 from polygraphy import util
-from polygraphy.backend.trt import ModifyNetworkOutputs, Profile
+from polygraphy.backend.common import bytes_from_path
 from polygraphy.backend.trt import (
+    ModifyNetworkOutputs,
+    Profile,
+    bytes_from_engine,
     engine_from_bytes,
     engine_from_network,
+    network_from_onnx_bytes,
     network_from_onnx_path,
     save_engine,
-    network_from_onnx_bytes,
-    bytes_from_engine
 )
 from polygraphy.logger import G_LOGGER
-import tensorrt as trt
-from enum import Enum, auto
-from safetensors.numpy import save_file, load_file
-from logging import error, warning
+from safetensors.numpy import load_file, save_file
+from torch.cuda import nvtx
 from tqdm import tqdm
-import copy 
-import zstandard
 
 TRT_LOGGER = trt.Logger(trt.Logger.VERBOSE)
 G_LOGGER.module_severity = G_LOGGER.VERBOSE
@@ -166,16 +168,18 @@ class TQDMProgressMonitor(trt.IProgressMonitor):
 
 
 class Engine:
-    def __init__(
-        self,
-        engine_path,
-    ):
+    def __init__(self, engine_path, enable_cuda_graph=True):
         self.engine_path = engine_path
         self.engine = None
         self.context = None
         self.buffers = OrderedDict()
         self.tensors = OrderedDict()
+        self.shared_device_memory = None
+
+        self.enable_cuda_graph = enable_cuda_graph
         self.cuda_graph_instance = None  # cuda graph
+        self.inferred = False
+        self.cuda_graph_stream = None 
 
     def __del__(self):
         del self.engine
@@ -219,11 +223,11 @@ class Engine:
             # Constant nodes in ONNX do not have inputs but have a constant output
             if n.op == "Constant":
                 name = n.outputs[0].name
-                print(f"Add Constant {name}\n")
+                print(f"Add Constant {name}")
                 try:
                     add_to_map(refit_dict, name, n.outputs[0].values)
                 except:
-                    error(f"Failed to add Constant {name}\n")
+                    error(f"Failed to add Constant {name}")
 
             # Handle scale and bias weights
             elif n.op == "Conv":
@@ -232,14 +236,14 @@ class Engine:
                     try:
                         add_to_map(refit_dict, name, n.inputs[1].values)
                     except:
-                        error(f"Failed to add Conv {name}\n")
+                        error(f"Failed to add Conv {name}")
 
                 if n.inputs[2].__class__ == gs.Constant:
                     name = n.name + "_TRTBIAS"
                     try:
                         add_to_map(refit_dict, name, n.inputs[2].values)
                     except:
-                        error(f"Failed to add Conv {name}\n")
+                        error(f"Failed to add Conv {name}")
 
             # For all other nodes: find node inputs that are initializers (AKA gs.Constant)
             else:
@@ -268,13 +272,18 @@ class Engine:
                 continue
 
             if refit_dict[custom_name] is not None:
-                refitter.set_weights(layer_name, weights_role, refit_dict[custom_name] if not reset_zero else np.zeros_like(refit_dict[custom_name]))
+                refitter.set_weights(
+                    layer_name,
+                    weights_role,
+                    refit_dict[custom_name]
+                    if not reset_zero
+                    else np.zeros_like(refit_dict[custom_name]),
+                )
             else:
                 print(f"[W] No refit weights for layer: {layer_name}")
 
         if not refitter.refit_cuda_engine():
-            print("Failed to refit!")
-            # exit(0)
+            raise Exception("Failed to refit!")
 
     def refit(self, onnx_path, onnx_refit_path, dump_refit_path=None):
         def convert_int64(arr):
@@ -392,8 +401,7 @@ class Engine:
                 print(f"[W] No refit weights for layer: {layer_name}")
 
         if not refitter.refit_cuda_engine():
-            print("Failed to refit!")
-            exit(0)
+            raise Exception("Failed to refit!")
 
     def refit_from_dump(self, dump_refit_path):
         refit_dict = load_file(
@@ -420,8 +428,7 @@ class Engine:
                 print(f"[W] No refit weights for layer: {layer_name}")
 
         if not refitter.refit_cuda_engine():
-            print("Failed to refit!")
-            exit(0)        
+            raise Exception("Failed to refit!")
 
     def refit_from_dict(self, refit_dict):
         refitter = trt.Refitter(self.engine, TRT_LOGGER)
@@ -439,15 +446,14 @@ class Engine:
             # Skip refitting Trilu for now; scalar weights of type int64 value 1 - for clip model
             if layer_name.startswith("onnx::Trilu"):
                 continue
-            
+
             if custom_name in refit_dict:
                 refitter.set_weights(layer_name, weights_role, refit_dict[custom_name])
             else:
                 print(f"[W] No refit weights for layer: {layer_name}")
 
         if not refitter.refit_cuda_engine():
-            print("Failed to refit!")
-            exit(0)       
+            raise Exception("Failed to refit!")
 
     def build(
         self,
@@ -475,7 +481,7 @@ class Engine:
 
         if type(onnx_path) == bytes:
             network = network_from_onnx_bytes(
-            onnx_path, flags=[trt.OnnxParserFlag.NATIVE_INSTANCENORM]
+                onnx_path, flags=[trt.OnnxParserFlag.NATIVE_INSTANCENORM]
             )
         else:
             network = network_from_onnx_path(
@@ -492,7 +498,9 @@ class Engine:
         config.set_flag(trt.BuilderFlag.FP16) if fp16 else None
         config.set_flag(trt.BuilderFlag.REFIT) if enable_refit else None
 
-        config.set_preview_feature(trt.PreviewFeature.DISABLE_EXTERNAL_TACTIC_SOURCES_FOR_CORE_0805,False)
+        config.set_preview_feature(
+            trt.PreviewFeature.DISABLE_EXTERNAL_TACTIC_SOURCES_FOR_CORE_0805, False
+        )
         # config.set_tactic_sources(1 << int(trt.TacticSource.CUBLAS) | 1 << int(trt.TacticSource.CUBLAS_LT))
 
         cache = None
@@ -514,7 +522,9 @@ class Engine:
         profiles = copy.deepcopy(p)
         for profile in profiles:
             # Last profile is used for set_calibration_profile.
-            calib_profile = profile.fill_defaults(network[1]).to_trt(builder, network[1])
+            calib_profile = profile.fill_defaults(network[1]).to_trt(
+                builder, network[1]
+            )
             config.add_optimization_profile(calib_profile)
 
         try:
@@ -527,15 +537,15 @@ class Engine:
             error(f"Failed to build engine: {e}")
             return 1
         return 0
-    
+
     def save_engine(self):
         print(f"Saveing TensorRT engine: {self.engine_path}")
-        with zstandard.open(self.engine_path,"wb") as zwfp:
+        with zstandard.open(self.engine_path, "wb") as zwfp:
             zwfp.write(bytes_from_engine(self.engine))
 
     def load(self):
         print(f"Loading TensorRT engine: {self.engine_path}")
-        with zstandard.open(self.engine_path,"rb") as zrfp:
+        with zstandard.open(self.engine_path, "rb") as zrfp:
             self.engine = engine_from_bytes(zrfp.read())
 
     def activate(self, reuse_device_memory=None):
@@ -549,6 +559,8 @@ class Engine:
         nvtx.range_push("allocate_buffers")
         for idx in range(self.engine.num_io_tensors):
             binding = self.engine[idx]
+            if binding in self.tensors:
+                continue
             if shape_dict and binding in shape_dict:
                 shape = shape_dict[binding].shape
             else:
@@ -562,6 +574,11 @@ class Engine:
                 tuple(shape), dtype=numpy_to_torch_dtype_dict[dtype]
             ).to(device=device)
             self.tensors[binding] = tensor
+        if not self.enable_cuda_graph or self.shared_device_memory == None:
+            self.shared_device_memory = torch.empty(
+                self.engine.device_memory_size, dtype=torch.uint8, device=device
+            )
+            self.context.device_memory = self.shared_device_memory.data_ptr()
         nvtx.range_pop()
 
     def infer(self, feed_dict, stream, use_cuda_graph=False):
@@ -573,12 +590,33 @@ class Engine:
             self.context.set_tensor_address(name, tensor.data_ptr())
         nvtx.range_pop()
         nvtx.range_push("execute")
-        noerror = self.context.execute_async_v3(stream)
-        if not noerror:
-            raise ValueError("ERROR: inference failed.")
+        if self.enable_cuda_graph and self.cuda_graph_instance is not None:
+            self.cuda_graph_instance.replay()
+        elif self.enable_cuda_graph and self.inferred:
+            # capture cuda graph
+            infer_graph = torch.cuda.CUDAGraph()
+            self.cuda_graph_stream = torch.cuda.Stream()
+
+            with torch.cuda.graph(infer_graph, stream=self.cuda_graph_stream):
+                noerror = self.context.execute_async_v3(self.cuda_graph_stream.cuda_stream)
+
+            if not noerror:
+                raise ValueError("ERROR: inference failed.")
+
+            self.cuda_graph_instance = infer_graph
+        else:
+            noerror = self.context.execute_async_v3(stream.cuda_stream)
+            if not noerror:
+                raise ValueError("ERROR: inference failed.")
+            self.inferred = True
         nvtx.range_pop()
+
+        if not self.enable_cuda_graph:
+            del self.shared_device_memory
+            self.shared_device_memory = None
+
         return self.tensors
-    
+
     def set_static_dict_input(self, feed_dict):
         nvtx.range_push("set_tensors")
         for name, tensor in feed_dict.items():
