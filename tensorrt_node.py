@@ -48,11 +48,15 @@ def get_engine_with_cache(key):
     return None
 
 
-def gen_engine(key, onnx_buff):
+def gen_engine(key, onnx_buff, input_profile):
     engine = Engine(get_engine_path(key))
     s = time.time()
     engine.build(
-        onnx_buff, fp16=True, enable_refit=True, timing_cache=TIMING_CACHE_PATH
+        onnx_buff,
+        fp16=True,
+        enable_refit=True,
+        timing_cache=TIMING_CACHE_PATH,
+        input_profile=[input_profile],
     )
     e = time.time()
     print(f"Time taken to build: {e-s}s")
@@ -104,6 +108,8 @@ class TensorRTPatch:
         self.model = model
         self.config = config
         self.engine = None
+        self.onnx_buff = None
+        self.profile_shape_info = None
 
     def __call__(self, model_function, params):
         input_x = params.get("input")
@@ -114,43 +120,51 @@ class TensorRTPatch:
         if hasattr(model_function.__self__, "hf_device_map"):
             return model_function(input_x, timestep_, **c)
 
-        if self.engine == None:
-            args = [input_x, timestep_]
-            input_names = ["input_x", "timestep"]
-            output_names = ["output"]
-            profile_shape_info = {
-                "input_x": [
-                    tuple(input_x.shape),
-                    tuple(input_x.shape),
-                    tuple(input_x.shape),
-                ],
-                "timestep": [
-                    tuple(timestep_.shape),
-                    tuple(timestep_.shape),
-                    tuple(timestep_.shape),
-                ],
-            }
+        nvtx.range_push("args")
+        onnx_args = [input_x, timestep_]
+        onnx_input_names = ["input_x", "timestep"]
+        onnx_output_names = ["output"]
+        profile_shape_info = {
+            "input_x": [
+                tuple(input_x.shape),
+                tuple(input_x.shape),
+                tuple(input_x.shape),
+            ],
+            "timestep": [
+                tuple(timestep_.shape),
+                tuple(timestep_.shape),
+                tuple(timestep_.shape),
+            ],
+        }
+        feed_dict = {
+            "input_x": input_x.float(),
+            "timestep": timestep_.float(),
+        }
 
-            for kwarg_name in ["c_concat", "c_crossattn"]:
-                kwarg = c.get(kwarg_name, None)
-                args.append(kwarg)
-                if kwarg != None:
-                    input_names.append(kwarg_name)
-                    profile_shape_info[kwarg_name] = [
-                        tuple(kwarg.shape),
-                        tuple(kwarg.shape),
-                        tuple(kwarg.shape),
-                    ]
+        for kwarg_name in ["c_concat", "c_crossattn"]:
+            kwarg = c.get(kwarg_name, None)
+            onnx_args.append(kwarg)
+            if kwarg != None:
+                onnx_input_names.append(kwarg_name)
+                profile_shape_info[kwarg_name] = [
+                    tuple(kwarg.shape),
+                    tuple(kwarg.shape),
+                    tuple(kwarg.shape),
+                ]
+                feed_dict[kwarg_name] = c[kwarg_name].float()
 
-            control = c.get("control", None)
-            args.append(control)
-            if control != None:
-                name_list, shape_info, _ = gen_control_params(control)
-                input_names.extend(name_list)
-                profile_shape_info.update(shape_info)
+        control = c.get("control", None)
+        onnx_args.append(control)
+        if control != None:
+            name_list, shape_info, control_params = gen_control_params(control)
+            onnx_input_names.extend(name_list)
+            profile_shape_info.update(shape_info)
+            feed_dict.update(control_params)
 
-            args.append({})
+        onnx_args.append({})
+        nvtx.range_pop()
 
+        if self.engine == None or self.profile_shape_info != profile_shape_info:
             unet_config = model_function.__self__.model_config.unet_config
 
             patch_module = convert_comfy_args((input_x, timestep_), c)
@@ -159,36 +173,41 @@ class TensorRTPatch:
             )
 
             self.engine = get_engine_with_cache(key)
-            onnx_buff = BytesIO()
-            gen_onnx_module(model_function, args, input_names, output_names, onnx_buff)
+
+            if self.onnx_buff == None:
+                self.onnx_buff = BytesIO()
+                gen_onnx_module(
+                    model_function,
+                    onnx_args,
+                    onnx_input_names,
+                    onnx_output_names,
+                    self.onnx_buff,
+                )
+
+            nvtx.range_push("offload origin model")
             model_function.__self__.to(device="cpu")
+            nvtx.range_pop()
 
             if self.engine == None:
-                self.engine = gen_engine(key, onnx_buff.getvalue())
-                onnx_buff.seek(0)
-                self.engine.refit_simple(onnx_buff, reset_zero=True)
+                self.engine = gen_engine(
+                    key, self.onnx_buff.getvalue(), profile_shape_info
+                )
+                self.onnx_buff.seek(0)
+                self.engine.refit_simple(self.onnx_buff, reset_zero=True)
                 self.engine.save_engine()
                 self.deactivate()
                 self.engine = get_engine_with_cache(key)
 
+            nvtx.range_push("load engine")
             self.activate()
-            onnx_buff.seek(0)
-            self.engine.refit_simple(onnx_buff)
+            nvtx.range_push("refit engine")
+            self.onnx_buff.seek(0)
+            self.engine.refit_simple(self.onnx_buff)
+            nvtx.range_pop()
+            self.profile_shape_info = profile_shape_info
+            nvtx.range_pop()
 
         nvtx.range_push("forward")
-        feed_dict = {
-            "input_x": input_x.float(),
-            "timestep": timestep_.float(),
-        }
-        for kwarg_name in ["c_concat", "c_crossattn"]:
-            if kwarg_name in c:
-                feed_dict[kwarg_name] = c[kwarg_name].float()
-
-        control = c.get("control", None)
-        if control != None:
-            _, _, control_params = gen_control_params(control)
-            feed_dict.update(control_params)
-
         tmp_buff = torch.empty(
             self.engine_vram_req, dtype=torch.uint8, device=input_x.device
         )
@@ -202,10 +221,13 @@ class TensorRTPatch:
         return out
 
     def activate(self):
+        nvtx.range_push("load engine byte")
         self.engine.load()
-        print(self.engine)
+        nvtx.range_pop()
         self.engine_vram_req = self.engine.engine.device_memory_size
+        nvtx.range_push("activate engine")
         self.engine.activate(True)
+        nvtx.range_pop()
 
     def deactivate(self):
         del self.engine
