@@ -30,6 +30,7 @@ TIMING_CACHE_PATH = os.path.join(
     os.path.dirname(__file__), "tensorrt_engine_cache", "timing_cache.cache"
 )
 if not os.path.exists(TIMING_CACHE_PATH):
+    os.makedirs(os.path.dirname(TIMING_CACHE_PATH), exist_ok=True)
     with open(TIMING_CACHE_PATH, "wb") as f:
         pass
 
@@ -114,6 +115,7 @@ class TensorRTPatch:
         self.config = config
         self.engine = None
         self.onnx_buff = None
+        self.onnx_buff_input_names = None
         self.profile_shape_info = None
 
     def __call__(self, model_function, params):
@@ -179,7 +181,7 @@ class TensorRTPatch:
 
             self.engine = get_engine_with_cache(key, self.config)
 
-            if self.onnx_buff == None:
+            if self.onnx_buff == None or self.onnx_buff_input_names != tuple(onnx_args):
                 self.onnx_buff = BytesIO()
                 gen_onnx_module(
                     model_function,
@@ -188,6 +190,7 @@ class TensorRTPatch:
                     onnx_output_names,
                     self.onnx_buff,
                 )
+                self.onnx_buff_input_names == tuple(onnx_args)
 
             nvtx.range_push("offload origin model")
             model_function.__self__.to(device="cpu")

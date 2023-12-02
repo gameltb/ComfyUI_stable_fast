@@ -534,9 +534,7 @@ class Engine:
                 save_timing_cache=timing_cache,
             )
         except Exception as e:
-            error(f"Failed to build engine: {e}")
-            return 1
-        return 0
+            raise Exception(f"Failed to build engine: {e}")
 
     def save_engine(self):
         print(f"Saveing TensorRT engine: {self.engine_path}")
