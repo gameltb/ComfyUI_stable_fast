@@ -1,14 +1,18 @@
-import torch
+import gc
+import hashlib
 import os
-from torch.cuda import nvtx
+import time
 from dataclasses import dataclass
 from io import BytesIO
-import hashlib
-import time
+
+import torch
+from torch.cuda import nvtx
+
+import comfy.model_management
 
 from .module.stable_diffusion_pipeline_compiler import (
-    gen_comfy_unet_cache_key,
     convert_comfy_args,
+    gen_comfy_unet_cache_key,
     to_module,
 )
 from .module.tensorrt_utilities import Engine
@@ -115,7 +119,7 @@ class TensorRTPatch:
         self.config = config
         self.engine = None
         self.onnx_buff = None
-        self.onnx_buff_input_names = None
+        self.onnx_buff_input_names = set()
         self.profile_shape_info = None
 
     def __call__(self, model_function, params):
@@ -172,6 +176,8 @@ class TensorRTPatch:
         nvtx.range_pop()
 
         if self.engine == None or self.profile_shape_info != profile_shape_info:
+            self.deactivate()
+
             unet_config = model_function.__self__.model_config.unet_config
 
             patch_module = convert_comfy_args((input_x, timestep_), c)
@@ -179,9 +185,13 @@ class TensorRTPatch:
                 unet_config, (input_x, timestep_), c, patch_module, profile_shape_info
             )
 
-            self.engine = get_engine_with_cache(key, self.config)
+            engine = get_engine_with_cache(key, self.config)
 
-            if self.onnx_buff == None or self.onnx_buff_input_names != tuple(onnx_args):
+            if (
+                self.onnx_buff == None
+                or self.onnx_buff_input_names != set(onnx_input_names)
+            ):
+                model_function.__self__.to(device=input_x.device)
                 self.onnx_buff = BytesIO()
                 gen_onnx_module(
                     model_function,
@@ -190,30 +200,35 @@ class TensorRTPatch:
                     onnx_output_names,
                     self.onnx_buff,
                 )
-                self.onnx_buff_input_names == tuple(onnx_args)
+                self.onnx_buff_input_names = set(onnx_input_names)
 
             nvtx.range_push("offload origin model")
             model_function.__self__.to(device="cpu")
+            gc.collect()
+            comfy.model_management.soft_empty_cache()
             nvtx.range_pop()
 
-            if self.engine == None:
-                self.engine = gen_engine(
-                    key, self.onnx_buff.getvalue(), profile_shape_info
-                )
+            if engine == None:
+                engine = gen_engine(key, self.onnx_buff.getvalue(), profile_shape_info)
                 self.onnx_buff.seek(0)
-                self.engine.refit_simple(self.onnx_buff, reset_zero=True)
-                self.engine.save_engine()
-                self.deactivate()
-                self.engine = get_engine_with_cache(key, self.config)
+                engine.refit_simple(self.onnx_buff, reset_zero=True)
+                engine.save_engine()
+                del engine
+                engine = get_engine_with_cache(key, self.config)
 
-            nvtx.range_push("load engine")
-            self.activate()
-            nvtx.range_push("refit engine")
-            self.onnx_buff.seek(0)
-            self.engine.refit_simple(self.onnx_buff)
-            nvtx.range_pop()
-            self.profile_shape_info = profile_shape_info
-            nvtx.range_pop()
+            self.engine = engine
+            try:
+                nvtx.range_push("load engine")
+                self.activate()
+                nvtx.range_push("refit engine")
+                self.onnx_buff.seek(0)
+                self.engine.refit_simple(self.onnx_buff)
+                nvtx.range_pop()
+                self.profile_shape_info = profile_shape_info
+                nvtx.range_pop()
+            except Exception as e:
+                self.engine = None
+                raise e
 
         nvtx.range_push("forward")
 
