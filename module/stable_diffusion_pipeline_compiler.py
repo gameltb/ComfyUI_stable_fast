@@ -3,7 +3,10 @@ import logging
 from dataclasses import dataclass
 
 import torch
-from sfast.compilers.stable_diffusion_pipeline_compiler import _modify_model
+from sfast.compilers.stable_diffusion_pipeline_compiler import (
+    _modify_model,
+    _enable_xformers,
+)
 from sfast.cuda.graphs import make_dynamic_graphed_callable
 from sfast.jit import utils as jit_utils
 from sfast.jit.trace_helper import hash_arg, trace_with_kwargs
@@ -187,12 +190,7 @@ def build_lazy_trace_module(config, device, patch_id):
     config.enable_cuda_graph = config.enable_cuda_graph and device.type == "cuda"
 
     if config.enable_xformers:
-        from sfast.utils.xformers_attention import (
-            xformers_memory_efficient_attention,
-        )
-        from xformers import ops
-
-        ops.memory_efficient_attention = xformers_memory_efficient_attention
+        _enable_xformers(None)
 
     return LazyTraceModule(
         config=config,
