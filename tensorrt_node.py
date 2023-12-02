@@ -119,7 +119,6 @@ class TensorRTPatch:
         self.config = config
         self.engine = None
         self.onnx_buff = None
-        self.onnx_buff_input_names = set()
         self.profile_shape_info = None
 
     def __call__(self, model_function, params):
@@ -187,9 +186,8 @@ class TensorRTPatch:
 
             engine = get_engine_with_cache(key, self.config)
 
-            if (
-                self.onnx_buff == None
-                or self.onnx_buff_input_names != set(onnx_input_names)
+            if self.onnx_buff == None or (
+                engine == None and self.profile_shape_info != profile_shape_info
             ):
                 model_function.__self__.to(device=input_x.device)
                 self.onnx_buff = BytesIO()
@@ -200,7 +198,6 @@ class TensorRTPatch:
                     onnx_output_names,
                     self.onnx_buff,
                 )
-                self.onnx_buff_input_names = set(onnx_input_names)
 
             nvtx.range_push("offload origin model")
             model_function.__self__.to(device="cpu")
