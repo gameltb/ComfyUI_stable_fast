@@ -59,9 +59,7 @@ class StableFastPatch:
                 id(self),
             )
 
-        return self.stable_fast_model.get_traced_module(
-            model_function, input_x, timestep_, **c
-        )(input_x, timestep_, **c)
+        return self.stable_fast_model(model_function, input_x, timestep_, **c)
 
     def to(self, device):
         if type(device) == torch.device:

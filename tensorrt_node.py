@@ -10,11 +10,8 @@ from torch.cuda import nvtx
 
 import comfy.model_management
 
-from .module.stable_diffusion_pipeline_compiler import (
-    convert_comfy_args,
-    gen_comfy_unet_cache_key,
-    to_module,
-)
+from .module.comfy_trace_utilities import BaseModelApplyModel
+from .module.stable_diffusion_pipeline_compiler import to_module
 from .module.tensorrt_utilities import Engine
 
 
@@ -131,6 +128,9 @@ class TensorRTPatch:
             return model_function(input_x, timestep_, **c)
 
         nvtx.range_push("args")
+        module = BaseModelApplyModel(model_function, (input_x, timestep_), c)
+        args, kwargs = module.convert_args()
+
         onnx_args = [input_x, timestep_]
         onnx_input_names = ["input_x", "timestep"]
         onnx_output_names = ["output"]
@@ -152,7 +152,7 @@ class TensorRTPatch:
         }
 
         for kwarg_name in ["c_concat", "c_crossattn"]:
-            kwarg = c.get(kwarg_name, None)
+            kwarg = kwargs.get(kwarg_name, None)
             onnx_args.append(kwarg)
             if kwarg != None:
                 onnx_input_names.append(kwarg_name)
@@ -161,9 +161,9 @@ class TensorRTPatch:
                     tuple(kwarg.shape),
                     tuple(kwarg.shape),
                 ]
-                feed_dict[kwarg_name] = c[kwarg_name].float()
+                feed_dict[kwarg_name] = kwargs[kwarg_name].float()
 
-        control = c.get("control", None)
+        control = kwargs.get("control", None)
         onnx_args.append(control)
         if control != None:
             name_list, shape_info, control_params = gen_control_params(control)
@@ -177,12 +177,7 @@ class TensorRTPatch:
         if self.engine == None or self.profile_shape_info != profile_shape_info:
             self.deactivate()
 
-            unet_config = model_function.__self__.model_config.unet_config
-
-            patch_module = convert_comfy_args((input_x, timestep_), c)
-            key = gen_comfy_unet_cache_key(
-                unet_config, (input_x, timestep_), c, patch_module, profile_shape_info
-            )
+            key = module.gen_cache_key(profile_shape_info)
 
             engine = get_engine_with_cache(key, self.config)
 
