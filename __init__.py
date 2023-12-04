@@ -22,3 +22,4 @@ try:
     NODE_DISPLAY_NAME_MAPPINGS.update(TRT_NODE_DISPLAY_NAME_MAPPINGS)
 except Exception as e:
     print("ComfyUI_stable_fast: tensorrt_node import failed.")
+    print(e)

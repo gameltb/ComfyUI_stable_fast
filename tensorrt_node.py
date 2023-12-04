@@ -11,7 +11,6 @@ from torch.cuda import nvtx
 import comfy.model_management
 
 from .module.comfy_trace_utilities import BaseModelApplyModel
-from .module.stable_diffusion_pipeline_compiler import to_module
 from .module.tensorrt_utilities import Engine
 
 
@@ -70,13 +69,45 @@ def gen_engine(key, onnx_buff, input_profile):
     return engine
 
 
-def gen_onnx_module(model_function, args, input_names, output_names, onnx_output):
-    model_function_module = to_module(model_function)
+def make_BaseModelApplyModel_FuncModule(model_function):
+    class BaseModelApplyModelFuncModule(torch.nn.Module):
+        def __init__(self, func, module=None):
+            super().__init__()
+            self.func = func
+            self.module = module
+
+        def forward(
+            self,
+            x,
+            t,
+            c_concat=None,
+            c_crossattn=None,
+            y=None,
+            control=None,
+            transformer_options={},
+        ):
+            kwargs = {"y": y}
+            return self.func(
+                x,
+                t,
+                c_concat=c_concat,
+                c_crossattn=c_crossattn,
+                control=control,
+                transformer_options=transformer_options,
+                **kwargs,
+            )
+
+    return BaseModelApplyModelFuncModule(model_function, model_function.__self__).eval()
+
+
+def gen_onnx_module(
+    model_function_module, args, input_names, output_names, onnx_output
+):
     # script_module = torch.jit.trace(model_function, example_inputs=args, example_kwarg_inputs=kwargs)
 
     torch.onnx.export(
         model_function_module,
-        (*args,),
+        tuple(args),
         onnx_output,
         export_params=True,
         verbose=True,
@@ -152,7 +183,7 @@ class TensorRTPatch:
             "timestep": timestep_.float(),
         }
 
-        for kwarg_name in ["c_concat", "c_crossattn"]:
+        for kwarg_name in ["c_concat", "c_crossattn", "y"]:
             kwarg = kwargs.get(kwarg_name, None)
             onnx_args.append(kwarg)
             if kwarg != None:
@@ -162,7 +193,7 @@ class TensorRTPatch:
                     tuple(kwarg.shape),
                     tuple(kwarg.shape),
                 ]
-                feed_dict[kwarg_name] = kwargs[kwarg_name].float()
+                feed_dict[kwarg_name] = kwarg.float()
 
         control = kwargs.get("control", None)
         onnx_args.append(control)
@@ -182,13 +213,15 @@ class TensorRTPatch:
 
             engine = get_engine_with_cache(key, self.config)
 
-            if self.onnx_buff == None or (
-                engine == None and self.profile_shape_info != profile_shape_info
-            ) or self.profile_shape_info_key_set != set(profile_shape_info.keys()):
+            if (
+                self.onnx_buff == None
+                or (engine == None and self.profile_shape_info != profile_shape_info)
+                or self.profile_shape_info_key_set != set(profile_shape_info.keys())
+            ):
                 model_function.__self__.to(device=input_x.device)
                 self.onnx_buff = BytesIO()
                 gen_onnx_module(
-                    model_function,
+                    make_BaseModelApplyModel_FuncModule(model_function),
                     onnx_args,
                     onnx_input_names,
                     onnx_output_names,
