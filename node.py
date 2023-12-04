@@ -68,10 +68,8 @@ class StableFastPatch:
                     # comfyui tell we should move to cpu. but we cannt do it with cuda graph and freeze now.
                     del self.stable_fast_model
                     self.stable_fast_model = None
-                    self.config.enable_cuda_graph = False
-                    self.config.enable_jit_freeze = False
                     print(
-                        "\33[93mWarning: Your graphics card doesn't have enough video memory to keep the model. Disable stable fast cuda graph, Flexibility will be improved but speed will be lost.\33[0m"
+                        "\33[93mWarning: Your graphics card doesn't have enough video memory to keep the model. If you experience a noticeable delay every time you start sampling, please consider disable enable_cuda_graph.\33[0m"
                     )
             else:
                 if self.stable_fast_model != None and device.type == "cpu":
