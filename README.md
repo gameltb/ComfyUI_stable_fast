@@ -31,3 +31,15 @@ Run ComfyUI with `--disable-cuda-malloc` may be possible to optimize the speed f
 >
 > - stable fast will optimize the speed when generating images using the same model for the second time. if you switch models or Lora frequently, please consider disable enable_cuda_graph.
 > - stable fast should be directly connected to ksampler, and it is better not to have other nodes between them.
+
+# TensorRT
+## Installation
+```
+pip install onnx zstandard
+pip install --pre --upgrade --extra-index-url https://pypi.nvidia.com tensorrt
+pip install onnx-graphsurgeon polygraphy --extra-index-url https://pypi.ngc.nvidia.com
+```
+## Usage
+
+Run ComfyUI with `--disable-xformers` and use `Apply TensorRT Unet` like `Apply StableFast Unet`.  
+The Engine will be cached in `tensorrt_engine_cache`, Each is about 2MB.
