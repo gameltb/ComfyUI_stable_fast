@@ -1,8 +1,5 @@
+import enum
 import gc
-import hashlib
-import os
-import time
-from dataclasses import dataclass
 from io import BytesIO
 
 import torch
@@ -11,62 +8,15 @@ from torch.cuda import nvtx
 import comfy.model_management
 
 from .module.comfy_trace_utilities import BaseModelApplyModel
-from .module.tensorrt_utilities import Engine
-
-
-@dataclass
-class TensorRTEngineCacheItem:
-    engine: object
-    patch_id: int
-    device: str
-
-
-@dataclass
-class TensorRTEngineConfig:
-    enable_cuda_graph: bool
-
-
-TIMING_CACHE_PATH = os.path.join(
-    os.path.dirname(__file__), "tensorrt_engine_cache", "timing_cache.cache"
+from .module.openaimodel_tensorrt import (
+    TENSORRT_CONTEXT_KEY,
+    TensorRTEngineCacheContext,
+    TensorRTEngineConfig,
+    do_hook_forward_timestep_embed,
+    gen_engine,
+    get_engine_with_cache,
+    undo_hook_forward_timestep_embed,
 )
-if not os.path.exists(TIMING_CACHE_PATH):
-    os.makedirs(os.path.dirname(TIMING_CACHE_PATH), exist_ok=True)
-    with open(TIMING_CACHE_PATH, "wb") as f:
-        pass
-
-
-def get_key_hash(key):
-    return hashlib.sha256(str(key).encode()).hexdigest()
-
-
-def get_engine_path(key):
-    engine_cache_dir = os.path.join(os.path.dirname(__file__), "tensorrt_engine_cache")
-    if not os.path.exists(engine_cache_dir):
-        os.makedirs(engine_cache_dir, exist_ok=True)
-    basename = hashlib.sha256(str(key).encode()).hexdigest()
-    return os.path.join(engine_cache_dir, basename + ".trt")
-
-
-def get_engine_with_cache(key, config):
-    engine_path = get_engine_path(key)
-    if os.path.exists(engine_path):
-        return Engine(engine_path, enable_cuda_graph=config.enable_cuda_graph)
-    return None
-
-
-def gen_engine(key, onnx_buff, input_profile):
-    engine = Engine(get_engine_path(key))
-    s = time.time()
-    engine.build(
-        onnx_buff,
-        fp16=True,
-        enable_refit=True,
-        timing_cache=TIMING_CACHE_PATH,
-        input_profile=[input_profile],
-    )
-    e = time.time()
-    print(f"Time taken to build: {e-s}s")
-    return engine
 
 
 def make_BaseModelApplyModel_FuncModule(model_function):
@@ -110,7 +60,7 @@ def gen_onnx_module(
         tuple(args),
         onnx_output,
         export_params=True,
-        verbose=True,
+        verbose=False,
         do_constant_folding=True,
         input_names=input_names,
         output_names=output_names,
@@ -289,6 +239,51 @@ class TensorRTPatch:
         return self
 
 
+class BlockTensorRTPatch:
+    def __init__(self, model, config):
+        self.model = model
+        self.config = config
+        self.tensorrt_context = TensorRTEngineCacheContext()
+
+    def __call__(self, model_function, params):
+        input_x = params.get("input")
+        timestep_ = params.get("timestep")
+        c = params.get("c")
+
+        # disable with accelerate for now
+        if hasattr(model_function.__self__, "hf_device_map"):
+            return model_function(input_x, timestep_, **c)
+
+        self.tensorrt_context.unet_config = (
+            model_function.__self__.model_config.unet_config
+        )
+        self.tensorrt_context.cuda_stream = torch.cuda.current_stream()
+        c["transformer_options"][TENSORRT_CONTEXT_KEY] = self.tensorrt_context
+
+        do_hook_forward_timestep_embed()
+        try:
+            out = model_function(input_x, timestep_, **c)
+        finally:
+            undo_hook_forward_timestep_embed()
+
+        return out
+
+    def to(self, device):
+        if type(device) == torch.device:
+            for k, v in self.tensorrt_context.block_cache.items():
+                v.pytorch_model_device = device
+            if device.type == "cpu":
+                for k, v in self.tensorrt_context.block_cache.items():
+                    del v.engine_cache
+                    v.engine_cache = None
+        return self
+
+
+class PatchType(enum.Enum):
+    UNET = TensorRTPatch
+    UNET_BLOCK = BlockTensorRTPatch
+
+
 class ApplyTensorRTUnet:
     @classmethod
     def INPUT_TYPES(s):
@@ -296,6 +291,7 @@ class ApplyTensorRTUnet:
             "required": {
                 "model": ("MODEL",),
                 "enable_cuda_graph": ("BOOLEAN", {"default": True}),
+                "patch_type": ([e.name for e in PatchType], {"default": "UNET_BLOCK"}),
             }
         }
 
@@ -304,9 +300,13 @@ class ApplyTensorRTUnet:
 
     CATEGORY = "loaders"
 
-    def apply_tensorrt(self, model, enable_cuda_graph):
+    def apply_tensorrt(self, model, enable_cuda_graph, patch_type):
         config = TensorRTEngineConfig(enable_cuda_graph=enable_cuda_graph)
-        patch = TensorRTPatch(model, config)
-        model_stable_fast = model.clone()
-        model_stable_fast.set_model_unet_function_wrapper(patch)
-        return (model_stable_fast,)
+        patch = None
+        for e in PatchType:
+            if e.name == patch_type:
+                patch = e.value(model, config)
+        assert patch != None
+        model_tensor_rt = model.clone()
+        model_tensor_rt.set_model_unet_function_wrapper(patch)
+        return (model_tensor_rt,)

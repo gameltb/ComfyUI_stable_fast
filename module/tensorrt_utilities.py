@@ -70,32 +70,6 @@ torch_to_numpy_dtype_dict = {
 }
 
 
-class PIPELINE_TYPE(Enum):
-    TXT2IMG = auto()
-    IMG2IMG = auto()
-    INPAINT = auto()
-    SD_XL_BASE = auto()
-    SD_XL_REFINER = auto()
-
-    def is_txt2img(self):
-        return self == self.TXT2IMG
-
-    def is_img2img(self):
-        return self == self.IMG2IMG
-
-    def is_inpaint(self):
-        return self == self.INPAINT
-
-    def is_sd_xl_base(self):
-        return self == self.SD_XL_BASE
-
-    def is_sd_xl_refiner(self):
-        return self == self.SD_XL_REFINER
-
-    def is_sd_xl(self):
-        return self.is_sd_xl_base() or self.is_sd_xl_refiner()
-
-
 class TQDMProgressMonitor(trt.IProgressMonitor):
     def __init__(self):
         trt.IProgressMonitor.__init__(self)
@@ -467,14 +441,6 @@ class Engine:
         update_output_names=None,
     ):
         print(f"Building TensorRT engine for : {self.engine_path}")
-        p = [Profile()]
-        if input_profile:
-            p = [Profile() for i in range(len(input_profile))]
-            for _p, i_profile in zip(p, input_profile):
-                for name, dims in i_profile.items():
-                    assert len(dims) == 3
-                    _p.add(name, min=dims[0], opt=dims[1], max=dims[2])
-
         config_kwargs = {}
         if not enable_all_tactics:
             config_kwargs["tactic_sources"] = []
@@ -490,6 +456,21 @@ class Engine:
         if update_output_names:
             print(f"Updating network outputs to {update_output_names}")
             network = ModifyNetworkOutputs(network, update_output_names)
+
+        input_names = set()
+        nd = network[1]
+        for i in range(nd.num_inputs):
+            input_names.add(nd.get_input(i).name)
+
+        p = [Profile()]
+        if input_profile:
+            p = [Profile() for i in range(len(input_profile))]
+            for _p, i_profile in zip(p, input_profile):
+                for name, dims in i_profile.items():
+                    if not name in input_names:
+                        continue
+                    assert len(dims) == 3
+                    _p.add(name, min=dims[0], opt=dims[1], max=dims[2])
 
         builder = network[0]
         config = builder.create_builder_config()
@@ -582,7 +563,8 @@ class Engine:
     def infer(self, feed_dict, stream, use_cuda_graph=False):
         nvtx.range_push("set_tensors")
         for name, buf in feed_dict.items():
-            self.tensors[name].copy_(buf)
+            if name in self.tensors:
+                self.tensors[name].copy_(buf)
 
         for name, tensor in self.tensors.items():
             self.context.set_tensor_address(name, tensor.data_ptr())
