@@ -47,7 +47,7 @@ Run ComfyUI with `--disable-cuda-malloc` may be possible to optimize the speed f
 ## TensorRT(testing)
 
 Run ComfyUI with `--disable-xformers` and use `Apply TensorRT Unet` like `Apply StableFast Unet`.  
-The Engine will be cached in `tensorrt_engine_cache`, Each is about 2MB.
+The Engine will be cached in `tensorrt_engine_cache`.
 
 > [!NOTE]
 >
@@ -57,23 +57,23 @@ The Engine will be cached in `tensorrt_engine_cache`, Each is about 2MB.
 
 ## Features
 
-|                  | Stable Fast           | TensorRT |
-| ---------------- | --------------------- | -------- |
-| SD1.5            | &check;               | &check;  |
-| SDXL             | untested(Should work) | WIP      |
-| SSD-1B           | &check;               | WIP      |
-| Lora             | &check;               | &check;  |
-| ControlNet Unet  | &check;               | &check;  |
-| VAE              | WIP                   | WIP      |
-| ControlNet Model | WIP                   | WIP      |
+|                  | Stable Fast           | TensorRT(UNET) | TensorRT(UNET_BLOCK) |
+| ---------------- | --------------------- | -------------- | -------------------- |
+| SD1.5            | &check;               | &check;        | &check;              |
+| SDXL             | untested(Should work) | WIP            | untested             |
+| SSD-1B           | &check;               | WIP            | &check;              |
+| Lora             | &check;               | &check;        | &check;              |
+| ControlNet Unet  | &check;               | &check;        | &check;              |
+| VAE              | WIP                   | WIP            | WIP                  |
+| ControlNet Model | WIP                   | WIP            | WIP                  |
 
 ## Nodes Tested
 
-|                        | Stable Fast | TensorRT |
-| ---------------------- | ----------- | -------- |
-| Load LoRA              | &check;     | &check;  |
-| FreeU(FreeU_V2)        | &check;     | &cross;  |
-| PatchModelAddDownscale | &check;     | WIP      |
+|                        | Stable Fast | TensorRT(UNET) | TensorRT(UNET_BLOCK) |
+| ---------------------- | ----------- | -------------- | -------------------- |
+| Load LoRA              | &check;     | &check;        | &check;              |
+| FreeU(FreeU_V2)        | &check;     | &cross;        | &check;              |
+| PatchModelAddDownscale | &check;     | WIP            | &check;              |
 
 ## Speed Test
 

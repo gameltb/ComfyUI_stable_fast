@@ -479,9 +479,9 @@ class Engine:
         config.set_flag(trt.BuilderFlag.FP16) if fp16 else None
         config.set_flag(trt.BuilderFlag.REFIT) if enable_refit else None
 
-        config.set_preview_feature(
-            trt.PreviewFeature.DISABLE_EXTERNAL_TACTIC_SOURCES_FOR_CORE_0805, False
-        )
+        # config.set_preview_feature(
+        #     trt.PreviewFeature.DISABLE_EXTERNAL_TACTIC_SOURCES_FOR_CORE_0805, False
+        # )
         # config.set_tactic_sources(1 << int(trt.TacticSource.CUBLAS) | 1 << int(trt.TacticSource.CUBLAS_LT))
 
         cache = None
