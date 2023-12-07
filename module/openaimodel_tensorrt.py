@@ -11,8 +11,8 @@ from torch.cuda import nvtx
 
 import comfy.ldm.modules.diffusionmodules.openaimodel
 import comfy.model_management
-from comfy.ldm.modules.diffusionmodules.openaimodel import forward_timestep_embed
 import comfy.model_patcher
+from comfy.ldm.modules.diffusionmodules.openaimodel import forward_timestep_embed
 
 from .comfy_trace_utilities import hash_arg
 from .tensorrt_utilities import Engine
@@ -29,7 +29,7 @@ class TensorRTEngineConfig:
 
 class CallableTensorRTEngineWarper:
     def __init__(self, tensorrt_context, identification) -> None:
-        self.tensorrt_context = tensorrt_context
+        self.tensorrt_context: TensorRTEngineCacheContext = tensorrt_context
         self.identification = identification
 
         self.engine: Engine = None
@@ -40,7 +40,6 @@ class CallableTensorRTEngineWarper:
         self.device_memory_size = 0
 
         self.engine_cache_map = {}
-
 
     def __call__(self, module, /, **kwargs: Any) -> Any:
         args = []
@@ -66,7 +65,10 @@ class CallableTensorRTEngineWarper:
             )
 
             if engine_cache_key in self.engine_cache_map:
-                self.engine,self.engine_comfy_model_patcher_warper = self.engine_cache_map[engine_cache_key]
+                (
+                    self.engine,
+                    self.engine_comfy_model_patcher_warper,
+                ) = self.engine_cache_map[engine_cache_key]
                 self.input_shape_info = input_shape_info
             else:
                 engine = get_engine_with_cache(
@@ -115,18 +117,28 @@ class CallableTensorRTEngineWarper:
                     self.engine.unload()
                     self.engine_comfy_model_patcher_warper = (
                         TensorRTEngineComfyModelPatcherWarper(
-                            engine, load_device=args[0].device, offload_device="cpu", size=self.device_memory_size
+                            engine,
+                            load_device=args[0].device,
+                            offload_device="cpu",
+                            size=self.device_memory_size,
                         )
                     )
                     comfy.model_management.load_models_gpu(
-                        [self.engine_comfy_model_patcher_warper], self.device_memory_size
+                        [
+                            self.tensorrt_context.origin_model_patcher,
+                            self.engine_comfy_model_patcher_warper,
+                        ],
+                        self.device_memory_size,
                     )
                     nvtx.range_push("refit engine")
                     self.onnx_cache.seek(0)
                     self.engine.refit_simple(self.onnx_cache)
                     nvtx.range_pop()
                     self.input_shape_info = input_shape_info
-                    self.engine_cache_map[engine_cache_key] = (self.engine,self.engine_comfy_model_patcher_warper)
+                    self.engine_cache_map[engine_cache_key] = (
+                        self.engine,
+                        self.engine_comfy_model_patcher_warper,
+                    )
                     nvtx.range_pop()
                 except Exception as e:
                     self.engine = None
@@ -134,13 +146,15 @@ class CallableTensorRTEngineWarper:
 
         if self.engine.engine == None:
             comfy.model_management.load_models_gpu(
-                    [self.engine_comfy_model_patcher_warper], self.device_memory_size
-                )
+                [
+                    self.tensorrt_context.origin_model_patcher,
+                    self.engine_comfy_model_patcher_warper,
+                ],
+                self.device_memory_size,
+            )
 
         self.engine.allocate_buffers(feed_dict)
-        return self.engine.infer(feed_dict, self.tensorrt_context.cuda_stream)[
-            "output"
-        ]
+        return self.engine.infer(feed_dict, self.tensorrt_context.cuda_stream)["output"]
 
 
 class TensorRTEngineComfyModelPatcherWarper(comfy.model_patcher.ModelPatcher):
@@ -167,6 +181,7 @@ class TensorRTEngineCacheContext:
     )
     cuda_stream = None
     unet_config = None
+    origin_model_patcher: comfy.model_patcher.ModelPatcher = None
 
 
 class ForwardTimestepEmbedModule(th.nn.Module):

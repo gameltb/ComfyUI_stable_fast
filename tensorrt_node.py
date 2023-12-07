@@ -243,7 +243,8 @@ class BlockTensorRTPatch:
     def __init__(self, model, config):
         self.model = model
         self.config = config
-        self.tensorrt_context = TensorRTEngineCacheContext()
+        self.tensorrt_context = TensorRTEngineCacheContext(origin_model_patcher=model)
+        self.model_device = torch.device("cpu")
 
     def __call__(self, model_function, params):
         input_x = params.get("input")
@@ -253,6 +254,12 @@ class BlockTensorRTPatch:
         # disable with accelerate for now
         if hasattr(model_function.__self__, "hf_device_map"):
             return model_function(input_x, timestep_, **c)
+
+        if self.model_device.type != "cpu":
+            model_function.__self__.diffusion_model.input_blocks = model_function.__self__.diffusion_model.input_blocks.to(device="cpu")
+            model_function.__self__.diffusion_model.middle_block = model_function.__self__.diffusion_model.middle_block.to(device="cpu")
+            model_function.__self__.diffusion_model.output_blocks = model_function.__self__.diffusion_model.output_blocks.to(device="cpu")
+            self.model_device = torch.device("cpu")
 
         self.tensorrt_context.unet_config = (
             model_function.__self__.model_config.unet_config
