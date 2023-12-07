@@ -153,7 +153,9 @@ class Engine:
         self.enable_cuda_graph = enable_cuda_graph
         self.cuda_graph_instance = None  # cuda graph
         self.inferred = False
-        self.cuda_graph_stream = None 
+        self.cuda_graph_stream = None
+
+        self.refited_engine_byte = None
 
     def __del__(self):
         del self.engine
@@ -197,11 +199,11 @@ class Engine:
             # Constant nodes in ONNX do not have inputs but have a constant output
             if n.op == "Constant":
                 name = n.outputs[0].name
-                print(f"Add Constant {name}")
-                try:
-                    add_to_map(refit_dict, name, n.outputs[0].values)
-                except:
-                    error(f"Failed to add Constant {name}")
+                if isinstance(n.outputs[0], gs.Constant):
+                    try:
+                        add_to_map(refit_dict, name, n.outputs[0].values)
+                    except:
+                        error(f"Failed to add Constant {name}")
 
             # Handle scale and bias weights
             elif n.op == "Conv":
@@ -253,176 +255,6 @@ class Engine:
                     if not reset_zero
                     else np.zeros_like(refit_dict[custom_name]),
                 )
-            else:
-                print(f"[W] No refit weights for layer: {layer_name}")
-
-        if not refitter.refit_cuda_engine():
-            raise Exception("Failed to refit!")
-
-    def refit(self, onnx_path, onnx_refit_path, dump_refit_path=None):
-        def convert_int64(arr):
-            # TODO: smarter conversion
-            if len(arr.shape) == 0:
-                return np.int32(arr)
-            return arr
-
-        def add_to_map(refit_dict, name, values):
-            if name in refit_dict:
-                assert refit_dict[name] is None
-                if values.dtype == np.int64:
-                    values = convert_int64(values)
-                refit_dict[name] = values
-
-        print(f"Refitting TensorRT engine with {onnx_refit_path} weights")
-        refit_nodes = gs.import_onnx(onnx.load(onnx_refit_path)).toposort().nodes
-
-        # Construct mapping from weight names in refit model -> original model
-        name_map = {}
-        for n, node in enumerate(gs.import_onnx(onnx.load(onnx_path)).toposort().nodes):
-            refit_node = refit_nodes[n]
-            assert node.op == refit_node.op
-            # Constant nodes in ONNX do not have inputs but have a constant output
-            if node.op == "Constant":
-                name_map[refit_node.outputs[0].name] = node.outputs[0].name
-            # Handle scale and bias weights
-            elif node.op == "Conv":
-                if node.inputs[1].__class__ == gs.Constant:
-                    name_map[refit_node.name + "_TRTKERNEL"] = node.name + "_TRTKERNEL"
-                if node.inputs[2].__class__ == gs.Constant:
-                    name_map[refit_node.name + "_TRTBIAS"] = node.name + "_TRTBIAS"
-            # For all other nodes: find node inputs that are initializers (gs.Constant)
-            else:
-                for i, inp in enumerate(node.inputs):
-                    if inp.__class__ == gs.Constant:
-                        name_map[refit_node.inputs[i].name] = inp.name
-
-        def map_name(name):
-            if name in name_map:
-                return name_map[name]
-            return name
-
-        # Construct refit dictionary
-        refit_dict = {}
-        refitter = trt.Refitter(self.engine, TRT_LOGGER)
-        all_weights = refitter.get_all()
-        for layer_name, role in zip(all_weights[0], all_weights[1]):
-            # for specialized roles, use a unique name in the map:
-            if role == trt.WeightsRole.KERNEL:
-                name = layer_name + "_TRTKERNEL"
-            elif role == trt.WeightsRole.BIAS:
-                name = layer_name + "_TRTBIAS"
-            else:
-                name = layer_name
-
-            assert name not in refit_dict, "Found duplicate layer: " + name
-            refit_dict[name] = None
-
-        for n in refit_nodes:
-            # Constant nodes in ONNX do not have inputs but have a constant output
-            if n.op == "Constant":
-                name = map_name(n.outputs[0].name)
-                print(f"Add Constant {name}\n")
-                try:
-                    add_to_map(refit_dict, name, n.outputs[0].values)
-                except:
-                    error(f"Failed to add Constant {name}\n")
-
-            # Handle scale and bias weights
-            elif n.op == "Conv":
-                if n.inputs[1].__class__ == gs.Constant:
-                    name = map_name(n.name + "_TRTKERNEL")
-                    try:
-                        add_to_map(refit_dict, name, n.inputs[1].values)
-                    except:
-                        error(f"Failed to add Conv {name}\n")
-
-                if n.inputs[2].__class__ == gs.Constant:
-                    name = map_name(n.name + "_TRTBIAS")
-                    try:
-                        add_to_map(refit_dict, name, n.inputs[2].values)
-                    except:
-                        error(f"Failed to add Conv {name}\n")
-
-            # For all other nodes: find node inputs that are initializers (AKA gs.Constant)
-            else:
-                for inp in n.inputs:
-                    name = map_name(inp.name)
-                    if inp.__class__ == gs.Constant:
-                        add_to_map(refit_dict, name, inp.values)
-
-        if dump_refit_path is not None:
-            print("Finished refit. Dumping result to disk.")
-            save_file(
-                refit_dict, dump_refit_path
-            )  # TODO need to come up with delta system to save only changed weights
-            return
-
-        for layer_name, weights_role in zip(all_weights[0], all_weights[1]):
-            if weights_role == trt.WeightsRole.KERNEL:
-                custom_name = layer_name + "_TRTKERNEL"
-            elif weights_role == trt.WeightsRole.BIAS:
-                custom_name = layer_name + "_TRTBIAS"
-            else:
-                custom_name = layer_name
-
-            # Skip refitting Trilu for now; scalar weights of type int64 value 1 - for clip model
-            if layer_name.startswith("onnx::Trilu"):
-                continue
-
-            if refit_dict[custom_name] is not None:
-                refitter.set_weights(layer_name, weights_role, refit_dict[custom_name])
-            else:
-                print(f"[W] No refit weights for layer: {layer_name}")
-
-        if not refitter.refit_cuda_engine():
-            raise Exception("Failed to refit!")
-
-    def refit_from_dump(self, dump_refit_path):
-        refit_dict = load_file(
-            dump_refit_path
-        )  # TODO if deltas are used needs to be unpacked here
-        refitter = trt.Refitter(self.engine, TRT_LOGGER)
-        all_weights = refitter.get_all()
-
-        for layer_name, weights_role in zip(all_weights[0], all_weights[1]):
-            if weights_role == trt.WeightsRole.KERNEL:
-                custom_name = layer_name + "_TRTKERNEL"
-            elif weights_role == trt.WeightsRole.BIAS:
-                custom_name = layer_name + "_TRTBIAS"
-            else:
-                custom_name = layer_name
-
-            # Skip refitting Trilu for now; scalar weights of type int64 value 1 - for clip model
-            if layer_name.startswith("onnx::Trilu"):
-                continue
-
-            if refit_dict[custom_name] is not None:
-                refitter.set_weights(layer_name, weights_role, refit_dict[custom_name])
-            else:
-                print(f"[W] No refit weights for layer: {layer_name}")
-
-        if not refitter.refit_cuda_engine():
-            raise Exception("Failed to refit!")
-
-    def refit_from_dict(self, refit_dict):
-        refitter = trt.Refitter(self.engine, TRT_LOGGER)
-        all_weights = refitter.get_all()
-
-        # TODO ideally iterate over refit_dict as len(refit_dict) < len(all_weights)
-        for layer_name, weights_role in zip(all_weights[0], all_weights[1]):
-            if weights_role == trt.WeightsRole.KERNEL:
-                custom_name = layer_name + "_TRTKERNEL"
-            elif weights_role == trt.WeightsRole.BIAS:
-                custom_name = layer_name + "_TRTBIAS"
-            else:
-                custom_name = layer_name
-
-            # Skip refitting Trilu for now; scalar weights of type int64 value 1 - for clip model
-            if layer_name.startswith("onnx::Trilu"):
-                continue
-
-            if custom_name in refit_dict:
-                refitter.set_weights(layer_name, weights_role, refit_dict[custom_name])
             else:
                 print(f"[W] No refit weights for layer: {layer_name}")
 
@@ -523,9 +355,32 @@ class Engine:
             zwfp.write(bytes_from_engine(self.engine))
 
     def load(self):
-        print(f"Loading TensorRT engine: {self.engine_path}")
-        with zstandard.open(self.engine_path, "rb") as zrfp:
-            self.engine = engine_from_bytes(zrfp.read())
+        if self.refited_engine_byte != None:
+            print(f"Loading TensorRT engine from byte cache.")
+            self.engine = engine_from_bytes(self.refited_engine_byte)
+            self.refited_engine_byte = None
+        else:
+            print(f"Loading TensorRT engine: {self.engine_path}")
+            with zstandard.open(self.engine_path, "rb") as zrfp:
+                self.engine = engine_from_bytes(zrfp.read())
+
+    def unload(self):
+        del self.engine
+        self.engine = None
+
+    def offload(self):
+        self.refited_engine_byte = bytes_from_engine(self.engine)
+        del self.context
+        self.context = None
+        del self.engine
+        self.engine = None
+        self.buffers = OrderedDict()
+        self.tensors = OrderedDict()
+        self.shared_device_memory = None
+
+        self.cuda_graph_instance = None 
+        self.inferred = False
+        self.cuda_graph_stream = None
 
     def activate(self, reuse_device_memory=None):
         if reuse_device_memory:
@@ -578,7 +433,9 @@ class Engine:
             self.cuda_graph_stream = torch.cuda.Stream()
 
             with torch.cuda.graph(infer_graph, stream=self.cuda_graph_stream):
-                noerror = self.context.execute_async_v3(self.cuda_graph_stream.cuda_stream)
+                noerror = self.context.execute_async_v3(
+                    self.cuda_graph_stream.cuda_stream
+                )
 
             if not noerror:
                 raise ValueError("ERROR: inference failed.")

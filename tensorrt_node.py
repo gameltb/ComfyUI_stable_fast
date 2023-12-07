@@ -270,12 +270,7 @@ class BlockTensorRTPatch:
 
     def to(self, device):
         if type(device) == torch.device:
-            for k, v in self.tensorrt_context.block_cache.items():
-                v.pytorch_model_device = device
-            if device.type == "cpu":
-                for k, v in self.tensorrt_context.block_cache.items():
-                    del v.engine_cache
-                    v.engine_cache = None
+            self.model_device = device
         return self
 
 
