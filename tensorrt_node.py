@@ -6,6 +6,7 @@ import torch
 from torch.cuda import nvtx
 
 import comfy.model_management
+import comfy.model_patcher
 
 from .module.comfy_trace_utilities import BaseModelApplyModel
 from .module.openaimodel_tensorrt import (
@@ -186,7 +187,9 @@ class TensorRTPatch:
             nvtx.range_pop()
 
             if engine == None:
-                engine = gen_engine(key, self.onnx_buff.getvalue(), profile_shape_info)
+                engine = gen_engine(
+                    key, self.onnx_buff.getvalue(), [profile_shape_info]
+                )
                 self.onnx_buff.seek(0)
                 engine.refit_simple(self.onnx_buff, reset_zero=True)
                 engine.save_engine()
@@ -240,11 +243,15 @@ class TensorRTPatch:
 
 
 class BlockTensorRTPatch:
+    tensorrt_context_cache = {}
+
     def __init__(self, model, config):
         self.model = model
         self.config = config
-        self.tensorrt_context = TensorRTEngineCacheContext(origin_model_patcher=model)
         self.model_device = torch.device("cpu")
+        self.tensorrt_context_cache[id(self)] = TensorRTEngineCacheContext(
+            origin_model_patcher=model
+        )
 
     def __call__(self, model_function, params):
         input_x = params.get("input")
@@ -255,29 +262,24 @@ class BlockTensorRTPatch:
         if hasattr(model_function.__self__, "hf_device_map"):
             return model_function(input_x, timestep_, **c)
 
-        if self.model_device.type != "cpu":
-            model_function.__self__.diffusion_model.input_blocks = (
-                model_function.__self__.diffusion_model.input_blocks.to(device="cpu")
-            )
-            model_function.__self__.diffusion_model.middle_block = (
-                model_function.__self__.diffusion_model.middle_block.to(device="cpu")
-            )
-            model_function.__self__.diffusion_model.output_blocks = (
-                model_function.__self__.diffusion_model.output_blocks.to(device="cpu")
-            )
-            self.model_device = torch.device("cpu")
-
-        self.tensorrt_context.unet_config = (
-            model_function.__self__.model_config.unet_config
-        )
-        self.tensorrt_context.cuda_stream = torch.cuda.current_stream()
-        c["transformer_options"][TENSORRT_CONTEXT_KEY] = self.tensorrt_context
+        self.tensorrt_context_cache[
+            id(self)
+        ].model_type = model_function.__self__.model_config.__class__.__name__
+        self.tensorrt_context_cache[
+            id(self)
+        ].unet_config = model_function.__self__.model_config.unet_config
+        self.tensorrt_context_cache[id(self)].cuda_stream = torch.cuda.current_stream()
+        self.tensorrt_context_cache[id(self)].cuda_device = input_x.device
+        c["transformer_options"][TENSORRT_CONTEXT_KEY] = self.tensorrt_context_cache[
+            id(self)
+        ]
 
         do_hook_forward_timestep_embed()
         try:
             out = model_function(input_x, timestep_, **c)
         finally:
             undo_hook_forward_timestep_embed()
+            c["transformer_options"].pop(TENSORRT_CONTEXT_KEY)
 
         return out
 
@@ -286,9 +288,47 @@ class BlockTensorRTPatch:
             self.model_device = device
         return self
 
+    def __del__(self):
+        self.tensorrt_context_cache.pop(id(self))
+
 
 def hook_memory_required(input_shape):
     return 0
+
+
+class TensorRTEngineOriginModelPatcherWarper_BlockPatch(
+    comfy.model_patcher.ModelPatcher
+):
+    @staticmethod
+    def cast_from(other):
+        tcls = comfy.model_patcher.ModelPatcher
+        if isinstance(other, tcls):
+            other.__class__ = TensorRTEngineOriginModelPatcherWarper_BlockPatch
+            return other
+        raise ValueError(f"instance must be {tcls.__qualname__}")
+
+    def cast_to_base_model(self):
+        self.__class__ = comfy.model_patcher.ModelPatcher
+        return self
+
+    def patch_model(self, device_to=None):
+        model = super().patch_model()
+
+        if device_to is not None:
+            for name, module in model.named_children():
+                if name in ("diffusion_model"):
+                    for name, module in module.named_children():
+                        if not name in (
+                            "input_blocks",
+                            "middle_block",
+                            "output_blocks",
+                        ):
+                            module.to(device_to)
+                else:
+                    module.to(device_to)
+            self.current_device = device_to
+
+        return model
 
 
 class PatchType(enum.Enum):
@@ -321,6 +361,12 @@ class ApplyTensorRTUnet:
                 patch = e.value(model, config)
         assert patch != None
         model_tensor_rt = model.clone()
+        if isinstance(patch, BlockTensorRTPatch):
+            model_tensor_rt = (
+                TensorRTEngineOriginModelPatcherWarper_BlockPatch.cast_from(
+                    model_tensor_rt
+                )
+            )
         model_tensor_rt.set_model_unet_function_wrapper(patch)
         if hook_memory_require:
             model_tensor_rt.add_object_patch("memory_required", hook_memory_required)

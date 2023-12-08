@@ -1,5 +1,6 @@
 import gc
 import hashlib
+import yaml
 import os
 import time
 from dataclasses import dataclass, field
@@ -30,38 +31,70 @@ class TensorRTEngineConfig:
 class CallableTensorRTEngineWarper:
     def __init__(self, tensorrt_context, identification) -> None:
         self.tensorrt_context: TensorRTEngineCacheContext = tensorrt_context
-        self.identification = identification
+        self.identification = identification + self.__class__.__name__
 
         self.engine: Engine = None
         self.onnx_cache = None
         self.input_shape_info = None
+        self.input_profile_info = None
 
         self.engine_comfy_model_patcher_warper = None
         self.device_memory_size = 0
 
         self.engine_cache_map = {}
 
-    def __call__(self, module, /, **kwargs: Any) -> Any:
+    def gen_onnx_args(self, kwargs):
         args = []
         args_name = []
+        for arg_name, arg in kwargs.items():
+            args.append(arg)
+            if arg != None:
+                args_name.append(arg_name)
+
+        return args, args_name, None
+
+    def gen_tensorrt_args(self, kwargs):
         input_shape_info = {}
         feed_dict = {}
         for arg_name, arg in kwargs.items():
-            args.append(arg)
-            args_name.append(arg_name)
             if arg != None:
                 feed_dict[arg_name] = arg
-                input_shape_info[arg_name] = [
-                    tuple(arg.shape),
-                    tuple(arg.shape),
-                    tuple(arg.shape),
-                ]
+                input_shape_info[arg_name] = tuple(arg.shape)
 
-        if self.engine == None or self.input_shape_info != input_shape_info:
+        return feed_dict, input_shape_info
+
+    def gen_tensorrt_args_profile(self, input_shape_info):
+        return {k: [v, v, v] for k, v in input_shape_info.items()}
+
+    def is_profile_compatible(self, input_profile_info, input_shape_info):
+        if input_profile_info == None:
+            return False
+        if len(input_profile_info) != len(input_shape_info):
+            return False
+        for arg_name, shape in input_shape_info.items():
+            profile = input_profile_info.get(arg_name, None)
+            if profile == None:
+                return False
+            if len(profile[0]) != len(shape):
+                return False
+            for d, mind, maxd in zip(shape, profile[0], profile[2]):
+                if d < mind or d > maxd:
+                    return False
+        return True
+
+    def __call__(self, module, /, **kwargs: Any) -> Any:
+        feed_dict, input_shape_info = self.gen_tensorrt_args(kwargs)
+
+        if self.engine == None or not self.is_profile_compatible(
+            self.input_profile_info, input_shape_info
+        ):
+            self.input_shape_info = input_shape_info
+            input_profile_info = self.gen_tensorrt_args_profile(input_shape_info)
+
             engine_cache_key = (
                 hash_arg(self.tensorrt_context.unet_config),
                 hash_arg(self.identification),
-                hash_arg(input_shape_info),
+                hash_arg(input_profile_info),
             )
 
             if engine_cache_key in self.engine_cache_map:
@@ -69,27 +102,31 @@ class CallableTensorRTEngineWarper:
                     self.engine,
                     self.engine_comfy_model_patcher_warper,
                 ) = self.engine_cache_map[engine_cache_key]
-                self.input_shape_info = input_shape_info
+                self.input_profile_info = input_profile_info
             else:
                 engine = get_engine_with_cache(
                     engine_cache_key, TensorRTEngineConfig(enable_cuda_graph=False)
                 )
 
-                if self.onnx_cache == None or (
-                    self.input_shape_info != input_shape_info and engine == None
-                ):
-                    module.to(device=args[0].device)
+                if self.onnx_cache == None:
+                    module.to(device=self.tensorrt_context.cuda_device)
+                    args, args_name, dynamic_axes = self.gen_onnx_args(kwargs)
                     self.onnx_cache = BytesIO()
-                    th.onnx.export(
-                        module,
-                        tuple(args),
-                        self.onnx_cache,
-                        export_params=True,
-                        verbose=False,
-                        do_constant_folding=True,
-                        input_names=args_name,
-                        output_names=["output"],
-                    )
+                    try:
+                        th.onnx.export(
+                            module,
+                            tuple(args),
+                            self.onnx_cache,
+                            export_params=True,
+                            verbose=False,
+                            do_constant_folding=True,
+                            input_names=args_name,
+                            output_names=["output"],
+                            dynamic_axes=dynamic_axes,
+                        )
+                    except Exception as e:
+                        self.onnx_cache = None
+                        raise e
 
                 nvtx.range_push("offload origin model")
                 module.to(device="cpu")
@@ -99,7 +136,9 @@ class CallableTensorRTEngineWarper:
 
                 if engine == None:
                     engine = gen_engine(
-                        engine_cache_key, self.onnx_cache.getvalue(), input_shape_info
+                        engine_cache_key,
+                        self.onnx_cache.getvalue(),
+                        [input_profile_info],
                     )
                     self.onnx_cache.seek(0)
                     engine.refit_simple(self.onnx_cache, reset_zero=True)
@@ -118,7 +157,7 @@ class CallableTensorRTEngineWarper:
                     self.engine_comfy_model_patcher_warper = (
                         TensorRTEngineComfyModelPatcherWarper(
                             engine,
-                            load_device=args[0].device,
+                            load_device=self.tensorrt_context.cuda_device,
                             offload_device="cpu",
                             size=self.device_memory_size,
                         )
@@ -134,7 +173,7 @@ class CallableTensorRTEngineWarper:
                     self.onnx_cache.seek(0)
                     self.engine.refit_simple(self.onnx_cache)
                     nvtx.range_pop()
-                    self.input_shape_info = input_shape_info
+                    self.input_profile_info = input_profile_info
                     self.engine_cache_map[engine_cache_key] = (
                         self.engine,
                         self.engine_comfy_model_patcher_warper,
@@ -155,6 +194,72 @@ class CallableTensorRTEngineWarper:
 
         self.engine.allocate_buffers(feed_dict)
         return self.engine.infer(feed_dict, self.tensorrt_context.cuda_stream)["output"]
+
+
+class CallableTensorRTEngineWarperDynamicShapeForwardTimestep(
+    CallableTensorRTEngineWarper
+):
+    args_name = [
+        "x",
+        "emb",
+        "context",
+        "output_shape_tensor",
+        "time_context",
+        "image_only_indicator",
+    ]
+
+    def gen_onnx_args(self, kwargs):
+        args_name = []
+        args = []
+        for arg_name in self.args_name:
+            args.append(kwargs.get(arg_name, None))
+            if args[-1] != None:
+                args_name.append(arg_name)
+        dynamic_axes = {
+            "x": {0: "B", 2: "H", 3: "W"},
+            "emb": {0: "B"},
+            "context": {0: "B", 1: "E"},
+            "output_shape_tensor": {0: "B", 2: "OH", 3: "OW"},
+        }
+        for k in list(dynamic_axes.keys()):
+            if not k in args_name:
+                dynamic_axes.pop(k)
+        return args, args_name, dynamic_axes
+
+    def gen_tensorrt_args(self, kwargs):
+        input_shape_info = {}
+        feed_dict = {}
+        for arg_name in self.args_name:
+            arg = kwargs.get(arg_name, None)
+            if arg != None:
+                feed_dict[arg_name] = arg
+                input_shape_info[arg_name] = tuple(arg.shape)
+
+        return feed_dict, input_shape_info
+
+    def gen_tensorrt_args_profile(self, input_shape_info):
+        min_input_profile_info = {
+            "x": {0: 1, 2: 1, 3: 1},
+            "emb": {0: 1},
+            "context": {0: 1, 1: 77},
+            "output_shape_tensor": {0: 1, 2: 1, 3: 1},
+        }
+        input_profile_info = {}
+        for arg_name in self.args_name:
+            shape_info = input_shape_info.get(arg_name, None)
+            min_shape_config = min_input_profile_info.get(arg_name, None)
+            if shape_info != None:
+                min_shape_info = list(shape_info)
+                if min_shape_config != None:
+                    for k, v in min_shape_config.items():
+                        min_shape_info[k] = v
+                input_profile_info[arg_name] = [
+                    tuple(min_shape_info),
+                    shape_info,
+                    shape_info,
+                ]
+
+        return input_profile_info
 
 
 class TensorRTEngineComfyModelPatcherWarper(comfy.model_patcher.ModelPatcher):
@@ -179,23 +284,34 @@ class TensorRTEngineCacheContext:
     block_cache: Dict[str, CallableTensorRTEngineWarper] = field(
         default_factory=lambda: {}
     )
+    cuda_device = None
     cuda_stream = None
-    unet_config = None
+    unet_config: dict = None
+    model_type: str = ""
     origin_model_patcher: comfy.model_patcher.ModelPatcher = None
+
+    def dump_input_profile_info(self):
+        input_shape_info_map = {}
+        for key in sorted(self.block_cache):
+            input_shape_info_map[key] = self.block_cache[key].input_shape_info
+        print(yaml.safe_dump(input_shape_info_map))
 
 
 class ForwardTimestepEmbedModule(th.nn.Module):
-    def __init__(
-        self, ts, transformer_options={}, output_shape=None, num_video_frames=None
-    ):
+    def __init__(self, ts, transformer_options={}, num_video_frames=None):
         super().__init__()
         self.module = ts
         self.transformer_options = transformer_options
-        self.output_shape = output_shape
         self.num_video_frames = num_video_frames
 
     def forward(
-        self, x, emb, context=None, time_context=None, image_only_indicator=None
+        self,
+        x,
+        emb,
+        context=None,
+        output_shape_tensor=None,
+        time_context=None,
+        image_only_indicator=None,
     ):
         return origin_forward_timestep_embed(
             self.module,
@@ -203,7 +319,9 @@ class ForwardTimestepEmbedModule(th.nn.Module):
             emb,
             context=context,
             transformer_options=self.transformer_options,
-            output_shape=self.output_shape,
+            output_shape=output_shape_tensor
+            if output_shape_tensor == None
+            else output_shape_tensor.shape,
             time_context=time_context,
             num_video_frames=self.num_video_frames,
             image_only_indicator=image_only_indicator,
@@ -221,9 +339,7 @@ def hook_forward_timestep_embed(
     num_video_frames=None,
     image_only_indicator=None,
 ):
-    module = ForwardTimestepEmbedModule(
-        ts, transformer_options, output_shape, num_video_frames
-    )
+    module = ForwardTimestepEmbedModule(ts, transformer_options, num_video_frames)
     tensorrt_context: TensorRTEngineCacheContext = transformer_options.get(
         TENSORRT_CONTEXT_KEY, None
     )
@@ -231,7 +347,9 @@ def hook_forward_timestep_embed(
         block_key = str(transformer_options["block"])
         block = tensorrt_context.block_cache.get(block_key, None)
         if block == None:
-            tensorrt_context.block_cache[block_key] = CallableTensorRTEngineWarper(
+            tensorrt_context.block_cache[
+                block_key
+            ] = CallableTensorRTEngineWarperDynamicShapeForwardTimestep(
                 tensorrt_context, block_key
             )
         return tensorrt_context.block_cache[block_key](
@@ -239,6 +357,9 @@ def hook_forward_timestep_embed(
             x=x,
             emb=emb,
             context=context,
+            output_shape_tensor=output_shape
+            if output_shape == None
+            else th.empty((output_shape), device=x.device, dtype=x.dtype),
             time_context=time_context,
             image_only_indicator=image_only_indicator,
         )
@@ -297,7 +418,7 @@ def gen_engine(key, onnx_buff, input_profile):
         fp16=True,
         enable_refit=True,
         timing_cache=TIMING_CACHE_PATH,
-        input_profile=[input_profile],
+        input_profile=input_profile,
     )
     e = time.time()
     print(f"Time taken to build: {e-s}s")

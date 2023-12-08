@@ -10,11 +10,12 @@ class PatchUNetModel(UNetModel):
 
     @staticmethod
     def cast_from(other):
-        if isinstance(other, UNetModel):
+        tcls = UNetModel
+        if isinstance(other, tcls):
             other.__class__ = PatchUNetModel
             other.patch_init()
             return other
-        raise ValueError(f"instance must be comfy.ldm.modules.diffusionmodules.openaimodel.UNetModel")
+        raise ValueError(f"instance must be {tcls.__qualname__}")
 
     def cast_to_base_model(self):
         self.patch_deinit()

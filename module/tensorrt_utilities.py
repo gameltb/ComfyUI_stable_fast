@@ -378,7 +378,7 @@ class Engine:
         self.tensors = OrderedDict()
         self.shared_device_memory = None
 
-        self.cuda_graph_instance = None 
+        self.cuda_graph_instance = None
         self.inferred = False
         self.cuda_graph_stream = None
 
@@ -393,20 +393,20 @@ class Engine:
         nvtx.range_push("allocate_buffers")
         for idx in range(self.engine.num_io_tensors):
             binding = self.engine[idx]
-            if binding in self.tensors:
-                continue
             if shape_dict and binding in shape_dict:
                 shape = shape_dict[binding].shape
             else:
                 shape = self.context.get_binding_shape(idx)
+            if binding in self.tensors and self.tensors[binding].shape == shape:
+                continue
             dtype = trt.nptype(self.engine.get_binding_dtype(binding))
             if self.engine.binding_is_input(binding):
                 self.context.set_binding_shape(idx, shape)
             if self.engine.binding_is_input(binding) and not binding in shape_dict:
                 continue
             tensor = torch.empty(
-                tuple(shape), dtype=numpy_to_torch_dtype_dict[dtype]
-            ).to(device=device)
+                tuple(shape), dtype=numpy_to_torch_dtype_dict[dtype], device=device
+            )
             self.tensors[binding] = tensor
         if not self.enable_cuda_graph or self.shared_device_memory == None:
             self.shared_device_memory = torch.empty(
