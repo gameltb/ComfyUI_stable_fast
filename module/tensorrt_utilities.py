@@ -415,7 +415,10 @@ class Engine:
             self.context.device_memory = self.shared_device_memory.data_ptr()
         nvtx.range_pop()
 
-    def infer(self, feed_dict, stream, use_cuda_graph=False):
+    def release_buffers(self):
+        self.tensors = {}
+
+    def infer(self, feed_dict, stream):
         nvtx.range_push("set_tensors")
         for name, buf in feed_dict.items():
             if name in self.tensors:

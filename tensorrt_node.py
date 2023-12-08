@@ -7,6 +7,7 @@ from torch.cuda import nvtx
 
 import comfy.model_management
 import comfy.model_patcher
+import nodes
 
 from .module.comfy_trace_utilities import BaseModelApplyModel
 from .module.openaimodel_tensorrt import (
@@ -249,8 +250,55 @@ class BlockTensorRTPatch:
         self.model = model
         self.config = config
         self.model_device = torch.device("cpu")
-        self.tensorrt_context_cache[id(self)] = TensorRTEngineCacheContext(
-            origin_model_patcher=model
+
+    def warmup(self, model_function, params):
+        input_x = params.get("input")
+        timestep_ = params.get("timestep")
+        c = params.get("c")
+
+        warmup_input_x = torch.zeros(
+            (
+                self.config.keep_batch_size * 2,
+                input_x.shape[1],
+                int(self.config.keep_height / 8),
+                int(self.config.keep_width / 8),
+            ),
+            device=input_x.device,
+            dtype=input_x.dtype,
+        )
+        warmup_timestep_ = torch.ones(
+            (self.config.keep_batch_size * 2,),
+            device=timestep_.device,
+            dtype=timestep_.dtype,
+        )
+        warmup_c = {"transformer_options": {}}
+        c_crossattn = c.get("c_crossattn", None)
+        if c_crossattn != None:
+            warmup_c["c_crossattn"] = torch.zeros(
+                (
+                    self.config.keep_batch_size * 2,
+                    self.config.keep_embedding_block * 77,
+                    c_crossattn.shape[2],
+                ),
+                device=c_crossattn.device,
+                dtype=c_crossattn.dtype,
+            )
+        c_concat = c.get("c_concat", None)
+        if c_concat != None:
+            warmup_c["c_concat"] = torch.zeros(
+                (
+                    self.config.keep_batch_size * 2,
+                    c_concat.shape[1],
+                    int(self.config.keep_height / 8),
+                    int(self.config.keep_width / 8),
+                ),
+                device=c_concat.device,
+                dtype=c_concat.dtype,
+            )
+
+        self(
+            model_function,
+            {"input": warmup_input_x, "timestep": warmup_timestep_, "c": warmup_c},
         )
 
     def __call__(self, model_function, params):
@@ -261,6 +309,12 @@ class BlockTensorRTPatch:
         # disable with accelerate for now
         if hasattr(model_function.__self__, "hf_device_map"):
             return model_function(input_x, timestep_, **c)
+
+        if not id(self) in self.tensorrt_context_cache:
+            self.tensorrt_context_cache[id(self)] = TensorRTEngineCacheContext(
+                origin_model_patcher=self.model
+            )
+            self.warmup(model_function, params)
 
         self.tensorrt_context_cache[
             id(self)
@@ -289,7 +343,8 @@ class BlockTensorRTPatch:
         return self
 
     def __del__(self):
-        self.tensorrt_context_cache.pop(id(self))
+        if id(self) in self.tensorrt_context_cache:
+            self.tensorrt_context_cache.pop(id(self))
 
 
 def hook_memory_required(input_shape):
@@ -345,6 +400,16 @@ class ApplyTensorRTUnet:
                 "enable_cuda_graph": ("BOOLEAN", {"default": True}),
                 "patch_type": ([e.name for e in PatchType], {"default": "UNET_BLOCK"}),
                 "hook_memory_require": ("BOOLEAN", {"default": True}),
+                "keep_width": (
+                    "INT",
+                    {"default": 768, "min": 16, "max": nodes.MAX_RESOLUTION, "step": 8},
+                ),
+                "keep_height": (
+                    "INT",
+                    {"default": 768, "min": 16, "max": nodes.MAX_RESOLUTION, "step": 8},
+                ),
+                "keep_batch_size": ("INT", {"default": 1, "min": 1, "max": 4096}),
+                "keep_embedding_block": ("INT", {"default": 2, "min": 1, "max": 4096}),
             }
         }
 
@@ -353,8 +418,24 @@ class ApplyTensorRTUnet:
 
     CATEGORY = "loaders"
 
-    def apply_tensorrt(self, model, enable_cuda_graph, patch_type, hook_memory_require):
-        config = TensorRTEngineConfig(enable_cuda_graph=enable_cuda_graph)
+    def apply_tensorrt(
+        self,
+        model,
+        enable_cuda_graph,
+        patch_type,
+        hook_memory_require,
+        keep_width,
+        keep_height,
+        keep_batch_size,
+        keep_embedding_block,
+    ):
+        config = TensorRTEngineConfig(
+            enable_cuda_graph=enable_cuda_graph,
+            keep_width=keep_width,
+            keep_height=keep_height,
+            keep_batch_size=keep_batch_size,
+            keep_embedding_block=keep_embedding_block,
+        )
         patch = None
         for e in PatchType:
             if e.name == patch_type:

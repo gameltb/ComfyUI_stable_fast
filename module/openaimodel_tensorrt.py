@@ -26,6 +26,10 @@ origin_forward_timestep_embed = forward_timestep_embed
 @dataclass
 class TensorRTEngineConfig:
     enable_cuda_graph: bool
+    keep_width: int = 768
+    keep_height: int = 768
+    keep_batch_size: int = 2
+    keep_embedding_block: int = 2
 
 
 class CallableTensorRTEngineWarper:
@@ -193,7 +197,12 @@ class CallableTensorRTEngineWarper:
             )
 
         self.engine.allocate_buffers(feed_dict)
-        return self.engine.infer(feed_dict, self.tensorrt_context.cuda_stream)["output"]
+        output = self.engine.infer(feed_dict, self.tensorrt_context.cuda_stream)[
+            "output"
+        ]
+        self.engine.release_buffers()
+
+        return output
 
 
 class CallableTensorRTEngineWarperDynamicShapeForwardTimestep(
@@ -285,6 +294,7 @@ class TensorRTEngineCacheContext:
         default_factory=lambda: {}
     )
     cuda_device = None
+    shared_device_memory = None
     cuda_stream = None
     unet_config: dict = None
     model_type: str = ""
