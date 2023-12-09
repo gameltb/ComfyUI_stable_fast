@@ -10,13 +10,15 @@ NODE_DISPLAY_NAME_MAPPINGS = {
 }
 
 try:
-    from .tensorrt_node import ApplyTensorRTUnet
+    from .tensorrt_node import ApplyTensorRTUnet, ApplyTensorRTVaeDecoder
 
     TRT_NODE_CLASS_MAPPINGS = {
         "ApplyTensorRTUnet": ApplyTensorRTUnet,
+        "ApplyTensorRTVaeDecoder": ApplyTensorRTVaeDecoder,
     }
     TRT_NODE_DISPLAY_NAME_MAPPINGS = {
         "ApplyTensorRTUnet": "Apply TensorRT Unet",
+        "ApplyTensorRTVaeDecoder": "Apply TensorRT VaeDecoder",
     }
     NODE_CLASS_MAPPINGS.update(TRT_NODE_CLASS_MAPPINGS)
     NODE_DISPLAY_NAME_MAPPINGS.update(TRT_NODE_DISPLAY_NAME_MAPPINGS)

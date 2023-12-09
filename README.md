@@ -46,7 +46,7 @@ Run ComfyUI with `--disable-cuda-malloc` may be possible to optimize the speed f
 
 ## TensorRT(testing)
 
-Run ComfyUI with `--disable-xformers` and use `Apply TensorRT Unet` like `Apply StableFast Unet`.  
+Run ComfyUI with `--disable-xformers --force-fp16 --fp16-vae` and use `Apply TensorRT Unet` like `Apply StableFast Unet`.  
 The Engine will be cached in `tensorrt_engine_cache`.
 
 > [!NOTE]
@@ -64,7 +64,7 @@ The Engine will be cached in `tensorrt_engine_cache`.
 | SSD-1B           | &check;               | WIP            | &check;              |
 | Lora             | &check;               | &check;        | &check;              |
 | ControlNet Unet  | &check;               | &check;        | &check;              |
-| VAE              | WIP                   | WIP            | WIP                  |
+| VAE              | WIP                   | &check;        | &check;              |
 | ControlNet Model | WIP                   | WIP            | WIP                  |
 
 ## Nodes Tested

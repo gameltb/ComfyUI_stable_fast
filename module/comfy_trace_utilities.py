@@ -1,6 +1,6 @@
-from .nodes_freelunch import FreeU, FreeU_V2
-from .openaimodel import PatchUNetModel
-from .nodes_model_downscale import (
+from .comfy_trace.nodes_freelunch import FreeU, FreeU_V2
+from .comfy_trace.openaimodel import PatchUNetModel
+from .comfy_trace.nodes_model_downscale import (
     PatchModelAddDownscale_input_block_patch,
     PatchModelAddDownscale_output_block_patch,
 )
@@ -95,7 +95,9 @@ class BaseModelApplyModel:
                 self.model_function.__self__.diffusion_model
             )
             try:
-                self.model_function.__self__.diffusion_model.set_patch_module(self.patch_module)
+                self.model_function.__self__.diffusion_model.set_patch_module(
+                    self.patch_module
+                )
 
                 result = func(self.model_function, self.args, self.kwargs)
             finally:

@@ -264,7 +264,7 @@ class Engine:
     def build(
         self,
         onnx_path,
-        fp16,
+        dtype,
         input_profile=None,
         enable_refit=False,
         enable_preview=False,
@@ -278,13 +278,9 @@ class Engine:
             config_kwargs["tactic_sources"] = []
 
         if type(onnx_path) == bytes:
-            network = network_from_onnx_bytes(
-                onnx_path, flags=[trt.OnnxParserFlag.NATIVE_INSTANCENORM]
-            )
+            network = network_from_onnx_bytes(onnx_path)
         else:
-            network = network_from_onnx_path(
-                onnx_path, flags=[trt.OnnxParserFlag.NATIVE_INSTANCENORM]
-            )
+            network = network_from_onnx_path(onnx_path)
         if update_output_names:
             print(f"Updating network outputs to {update_output_names}")
             network = ModifyNetworkOutputs(network, update_output_names)
@@ -308,7 +304,10 @@ class Engine:
         config = builder.create_builder_config()
         config.progress_monitor = TQDMProgressMonitor()
 
-        config.set_flag(trt.BuilderFlag.FP16) if fp16 else None
+        if dtype == torch.float16:
+            config.set_flag(trt.BuilderFlag.FP16)
+        elif dtype == torch.bfloat16:
+            config.set_flag(trt.BuilderFlag.BF16)
         config.set_flag(trt.BuilderFlag.REFIT) if enable_refit else None
 
         # config.set_preview_feature(
@@ -363,17 +362,19 @@ class Engine:
             print(f"Loading TensorRT engine: {self.engine_path}")
             with zstandard.open(self.engine_path, "rb") as zrfp:
                 self.engine = engine_from_bytes(zrfp.read())
+        self.binding_set = set()
+        for idx in range(self.engine.num_io_tensors):
+            self.binding_set.add(self.engine[idx])
 
     def unload(self):
+        del self.context
+        self.context = None
         del self.engine
         self.engine = None
 
     def offload(self):
         self.refited_engine_byte = bytes_from_engine(self.engine)
-        del self.context
-        self.context = None
-        del self.engine
-        self.engine = None
+        self.unload()
         self.buffers = OrderedDict()
         self.tensors = OrderedDict()
         self.shared_device_memory = None
@@ -389,7 +390,9 @@ class Engine:
         else:
             self.context = self.engine.create_execution_context()
 
-    def allocate_buffers(self, shape_dict=None, device="cuda"):
+    def allocate_buffers(
+        self, shape_dict=None, device="cuda", allocate_input_buffers=True
+    ):
         nvtx.range_push("allocate_buffers")
         for idx in range(self.engine.num_io_tensors):
             binding = self.engine[idx]
@@ -402,8 +405,9 @@ class Engine:
             dtype = trt.nptype(self.engine.get_binding_dtype(binding))
             if self.engine.binding_is_input(binding):
                 self.context.set_binding_shape(idx, shape)
-            if self.engine.binding_is_input(binding) and not binding in shape_dict:
-                continue
+            if self.engine.binding_is_input(binding):
+                if not allocate_input_buffers or not binding in shape_dict:
+                    continue
             tensor = torch.empty(
                 tuple(shape), dtype=numpy_to_torch_dtype_dict[dtype], device=device
             )
@@ -423,6 +427,9 @@ class Engine:
         for name, buf in feed_dict.items():
             if name in self.tensors:
                 self.tensors[name].copy_(buf)
+            elif name in self.binding_set:
+                dtype = trt.nptype(self.engine.get_binding_dtype(name))
+                self.tensors[name] = buf.to(dtype=numpy_to_torch_dtype_dict[dtype])
 
         for name, tensor in self.tensors.items():
             self.context.set_tensor_address(name, tensor.data_ptr())
