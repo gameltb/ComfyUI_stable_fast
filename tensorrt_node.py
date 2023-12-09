@@ -1,6 +1,7 @@
 import enum
 import gc
 from io import BytesIO
+import copy
 
 import torch
 from torch.cuda import nvtx
@@ -559,7 +560,9 @@ class ApplyTensorRTVaeDecoder:
             keep_height=keep_height,
         )
         patch = VAEDecodeTensorRTPatch(vae, config)
-        vae.patcher.add_object_patch("decode", patch)
-        return (vae,)
+        vae_tensor_rt = copy.copy(vae)
+        vae_tensor_rt.patcher = vae_tensor_rt.patcher.clone()
+        vae_tensor_rt.patcher.add_object_patch("decode", patch)
+        return (vae_tensor_rt,)
 
 
