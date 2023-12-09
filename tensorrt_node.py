@@ -402,6 +402,9 @@ class TensorRTEngineOriginModelPatcherWarper_BlockPatch(
 
         return model
 
+    def __del__(self):
+        self.model.to(self.current_device)
+
 
 class PatchType(enum.Enum):
     UNET = TensorRTPatch
