@@ -64,7 +64,7 @@ The Engine will be cached in `tensorrt_engine_cache`.
 | SSD-1B           | &check;               | WIP            | &check;              |
 | Lora             | &check;               | &check;        | &check;              |
 | ControlNet Unet  | &check;               | &check;        | &check;              |
-| VAE              | WIP                   | &check;        | &check;              |
+| VAE decode       | WIP                   | &check;        | &check;              |
 | ControlNet Model | WIP                   | WIP            | WIP                  |
 
 ## Nodes Tested
