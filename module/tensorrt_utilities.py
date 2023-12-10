@@ -226,7 +226,10 @@ class Engine:
                 for inp in n.inputs:
                     name = inp.name
                     if inp.__class__ == gs.Constant:
-                        add_to_map(refit_dict, name, inp.values)
+                        try:
+                            add_to_map(refit_dict, name, inp.values)
+                        except:
+                            error(f"Failed to add Constant {name}")
 
         if dump_refit_path is not None:
             print("Finished refit. Dumping result to disk.")
@@ -420,7 +423,7 @@ class Engine:
         nvtx.range_pop()
 
     def release_buffers(self):
-        self.tensors = {}
+        self.tensors = OrderedDict()
 
     def infer(self, feed_dict, stream):
         nvtx.range_push("set_tensors")

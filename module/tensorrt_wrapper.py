@@ -51,6 +51,9 @@ class CallableTensorRTEngineWrapper:
 
         return args, args_name, None
 
+    def gen_onnx_outputs(self, module):
+        return ["output"]
+
     def gen_tensorrt_args(self, kwargs):
         input_shape_info = {}
         feed_dict = {}
@@ -63,6 +66,9 @@ class CallableTensorRTEngineWrapper:
 
     def gen_tensorrt_args_profile(self, input_shape_info):
         return {k: [v, v, v] for k, v in input_shape_info.items()}
+
+    def gen_tensorrt_outputs(self, output):
+        return output["output"]
 
     def is_profile_compatible(self, input_profile_info, input_shape_info):
         if input_profile_info == None:
@@ -119,7 +125,7 @@ class CallableTensorRTEngineWrapper:
                             verbose=False,
                             do_constant_folding=True,
                             input_names=args_name,
-                            output_names=["output"],
+                            output_names=self.gen_onnx_outputs(module),
                             dynamic_axes=dynamic_axes,
                         )
                     except Exception as e:
@@ -133,6 +139,9 @@ class CallableTensorRTEngineWrapper:
                 nvtx.range_pop()
 
                 if engine == None:
+                    comfy.model_management.free_memory(
+                        6 * 1024 * 1024 * 1024, self.tensorrt_context.cuda_device
+                    )
                     engine = gen_engine(
                         engine_cache_key,
                         self.onnx_cache.getvalue(),
@@ -196,9 +205,8 @@ class CallableTensorRTEngineWrapper:
             device=self.tensorrt_context.cuda_device,
             allocate_input_buffers=False,
         )
-        output = self.engine.infer(feed_dict, self.tensorrt_context.cuda_stream)[
-            "output"
-        ]
+        output = self.engine.infer(feed_dict, self.tensorrt_context.cuda_stream)
+        output = self.gen_tensorrt_outputs(output)
         self.engine.release_buffers()
 
         return output

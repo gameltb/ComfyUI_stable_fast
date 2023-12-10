@@ -1,7 +1,7 @@
+import copy
 import enum
 import gc
 from io import BytesIO
-import copy
 
 import torch
 from torch.cuda import nvtx
@@ -11,6 +11,9 @@ import comfy.model_patcher
 import nodes
 
 from .module.comfy_trace_utilities import BaseModelApplyModel
+from .module.controlnet_tensorrt import (
+    CallableTensorRTEngineWrapperDynamicShapeControlNet,
+)
 from .module.openaimodel_tensorrt import (
     TENSORRT_CONTEXT_KEY,
     TensorRTEngineBlockContext,
@@ -468,6 +471,7 @@ class ApplyTensorRTUnet:
                     model_tensor_rt
                 )
             )
+            patch.model = model_tensor_rt
         model_tensor_rt.set_model_unet_function_wrapper(patch)
         if hook_memory_require:
             model_tensor_rt.add_object_patch("memory_required", hook_memory_required)
@@ -569,3 +573,120 @@ class ApplyTensorRTVaeDecoder:
         return (vae_tensor_rt,)
 
 
+class ControlNetTensorRTPatch:
+    def __init__(self, control_model, config):
+        self.control_model = control_model
+        self.config = config
+        self.tensorrt_context = TensorRTEngineContext()
+        self.tensorrt_module = None
+        self.dtype = torch.float16
+
+    def state_dict(self):
+        return self.control_model.state_dict()
+
+    def to(self, device):
+        return self.control_model.to(device)
+
+    def warmup(self, x, hint, timesteps, context, y=None):
+        warmup_x = torch.zeros(
+            (
+                self.config.keep_batch_size * 2,
+                x.shape[1],
+                int(self.config.keep_height / 8),
+                int(self.config.keep_width / 8),
+            ),
+            device=x.device,
+            dtype=x.dtype,
+        )
+        warmup_hint = torch.zeros(
+            (
+                self.config.keep_batch_size,
+                hint.shape[1],
+                self.config.keep_height,
+                self.config.keep_width,
+            ),
+            device=hint.device,
+            dtype=hint.dtype,
+        )
+        warmup_timesteps = torch.ones(
+            (self.config.keep_batch_size * 2,),
+            device=timesteps.device,
+            dtype=timesteps.dtype,
+        )
+        warmup_context = torch.zeros(
+            (
+                self.config.keep_batch_size * 2,
+                self.config.keep_embedding_block * 77,
+                context.shape[2],
+            ),
+            device=context.device,
+            dtype=context.dtype,
+        )
+
+        self(warmup_x, warmup_hint, warmup_timesteps, warmup_context, y)
+
+    def __call__(self, x, hint, timesteps, context, y=None):
+        if self.tensorrt_module == None:
+            self.tensorrt_module = CallableTensorRTEngineWrapperDynamicShapeControlNet(
+                self.tensorrt_context, ""
+            )
+            self.warmup(x, hint, timesteps, context, y)
+
+        self.tensorrt_context.cuda_stream = torch.cuda.current_stream()
+        self.tensorrt_context.cuda_device = x.device
+        self.tensorrt_context.dtype = x.dtype
+
+        return self.tensorrt_module(
+            self.control_model,
+            x=x,
+            hint=hint,
+            timesteps=timesteps,
+            context=context,
+            y=y,
+        )
+
+
+class ApplyTensorRTControlNet:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "control_net": ("CONTROL_NET",),
+                "enable_cuda_graph": ("BOOLEAN", {"default": True}),
+                "keep_width": (
+                    "INT",
+                    {"default": 768, "min": 16, "max": nodes.MAX_RESOLUTION, "step": 8},
+                ),
+                "keep_height": (
+                    "INT",
+                    {"default": 768, "min": 16, "max": nodes.MAX_RESOLUTION, "step": 8},
+                ),
+                "keep_batch_size": ("INT", {"default": 1, "min": 1, "max": 4096}),
+            }
+        }
+
+    RETURN_TYPES = ("CONTROL_NET",)
+    FUNCTION = "apply_tensorrt"
+
+    CATEGORY = "loaders"
+
+    def apply_tensorrt(
+        self,
+        control_net,
+        enable_cuda_graph,
+        keep_width,
+        keep_height,
+        keep_batch_size,
+    ):
+        # hook comfy/controlnet.py#ControlNet.control_model_wrapped
+        config = TensorRTEngineConfig(
+            enable_cuda_graph=enable_cuda_graph,
+            keep_width=keep_width,
+            keep_height=keep_height,
+            keep_batch_size=keep_batch_size,
+        )
+        patch = ControlNetTensorRTPatch(control_net.control_model, config)
+        control_net_tensor_rt = copy.copy(control_net)
+        control_net_tensor_rt.control_model = patch
+        control_net_tensor_rt = control_net_tensor_rt.copy()
+        return (control_net_tensor_rt,)
