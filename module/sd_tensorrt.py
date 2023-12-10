@@ -1,6 +1,6 @@
 import torch as th
 
-from .tensorrt_warper import CallableTensorRTEngineWarper
+from .tensorrt_wrapper import CallableTensorRTEngineWrapper
 
 
 class VAEDecodeModule(th.nn.Module):
@@ -13,7 +13,7 @@ class VAEDecodeModule(th.nn.Module):
         return self.decode(samples)
 
 
-class CallableTensorRTEngineWarperDynamicShapeVAEDecode(CallableTensorRTEngineWarper):
+class CallableTensorRTEngineWrapperDynamicShapeVAEDecode(CallableTensorRTEngineWrapper):
     args_name = [
         "samples",
     ]

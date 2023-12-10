@@ -8,7 +8,7 @@ import comfy.ldm.modules.diffusionmodules.openaimodel
 import comfy.model_management
 import comfy.model_patcher
 from comfy.ldm.modules.diffusionmodules.openaimodel import forward_timestep_embed
-from .tensorrt_warper import TensorRTEngineContext, CallableTensorRTEngineWarper
+from .tensorrt_wrapper import TensorRTEngineContext, CallableTensorRTEngineWrapper
 
 TENSORRT_CONTEXT_KEY = "tensorrt_context"
 
@@ -17,7 +17,7 @@ origin_forward_timestep_embed = forward_timestep_embed
 
 @dataclass
 class TensorRTEngineBlockContext:
-    block_cache: Dict[str, CallableTensorRTEngineWarper] = field(
+    block_cache: Dict[str, CallableTensorRTEngineWrapper] = field(
         default_factory=lambda: {}
     )
     tensorrt_context: TensorRTEngineContext = field(
@@ -31,8 +31,8 @@ class TensorRTEngineBlockContext:
         print(yaml.safe_dump(input_shape_info_map))
 
 
-class CallableTensorRTEngineWarperDynamicShapeForwardTimestep(
-    CallableTensorRTEngineWarper
+class CallableTensorRTEngineWrapperDynamicShapeForwardTimestep(
+    CallableTensorRTEngineWrapper
 ):
     args_name = [
         "x",
@@ -149,7 +149,7 @@ def hook_forward_timestep_embed(
         if block == None:
             tensorrt_block_context.block_cache[
                 block_key
-            ] = CallableTensorRTEngineWarperDynamicShapeForwardTimestep(
+            ] = CallableTensorRTEngineWrapperDynamicShapeForwardTimestep(
                 tensorrt_block_context.tensorrt_context, block_key
             )
         return tensorrt_block_context.block_cache[block_key](

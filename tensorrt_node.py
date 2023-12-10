@@ -18,10 +18,10 @@ from .module.openaimodel_tensorrt import (
     undo_hook_forward_timestep_embed,
 )
 from .module.sd_tensorrt import (
-    CallableTensorRTEngineWarperDynamicShapeVAEDecode,
+    CallableTensorRTEngineWrapperDynamicShapeVAEDecode,
     VAEDecodeModule,
 )
-from .module.tensorrt_warper import (
+from .module.tensorrt_wrapper import (
     TensorRTEngineConfig,
     TensorRTEngineContext,
     gen_engine,
@@ -368,14 +368,14 @@ def hook_memory_required(input_shape):
     return 0
 
 
-class TensorRTEngineOriginModelPatcherWarper_BlockPatch(
+class TensorRTEngineOriginModelPatcherWrapper_BlockPatch(
     comfy.model_patcher.ModelPatcher
 ):
     @staticmethod
     def cast_from(other):
         tcls = comfy.model_patcher.ModelPatcher
         if isinstance(other, tcls):
-            other.__class__ = TensorRTEngineOriginModelPatcherWarper_BlockPatch
+            other.__class__ = TensorRTEngineOriginModelPatcherWrapper_BlockPatch
             return other
         raise ValueError(f"instance must be {tcls.__qualname__}")
 
@@ -464,7 +464,7 @@ class ApplyTensorRTUnet:
         model_tensor_rt = model.clone()
         if isinstance(patch, BlockTensorRTPatch):
             model_tensor_rt = (
-                TensorRTEngineOriginModelPatcherWarper_BlockPatch.cast_from(
+                TensorRTEngineOriginModelPatcherWrapper_BlockPatch.cast_from(
                     model_tensor_rt
                 )
             )
@@ -498,7 +498,7 @@ class VAEDecodeTensorRTPatch:
 
     def __call__(self, samples_in):
         if self.tensorrt_module == None:
-            self.tensorrt_module = CallableTensorRTEngineWarperDynamicShapeVAEDecode(
+            self.tensorrt_module = CallableTensorRTEngineWrapperDynamicShapeVAEDecode(
                 self.tensorrt_context, ""
             )
             self.warmup(samples_in)
