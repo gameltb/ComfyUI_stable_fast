@@ -281,9 +281,13 @@ class Engine:
             config_kwargs["tactic_sources"] = []
 
         if type(onnx_path) == bytes:
-            network = network_from_onnx_bytes(onnx_path)
+            network = network_from_onnx_bytes(
+                onnx_path, flags=[trt.OnnxParserFlag.NATIVE_INSTANCENORM]
+            )
         else:
-            network = network_from_onnx_path(onnx_path)
+            network = network_from_onnx_path(
+                onnx_path, flags=[trt.OnnxParserFlag.NATIVE_INSTANCENORM]
+            )
         if update_output_names:
             print(f"Updating network outputs to {update_output_names}")
             network = ModifyNetworkOutputs(network, update_output_names)
@@ -367,7 +371,7 @@ class Engine:
             with zstandard.open(self.engine_path, "rb") as zrfp:
                 self.engine = engine_from_bytes(zrfp.read())
         self.update_binding_set()
-    
+
     def update_binding_set(self):
         self.binding_set = set()
         for idx in range(self.engine.num_io_tensors):
