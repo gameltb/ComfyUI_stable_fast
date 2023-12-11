@@ -1,13 +1,26 @@
-from .node import ApplyStableFastUnet
+import traceback 
+import sys 
 
-NODE_CLASS_MAPPINGS = {
-    "ApplyStableFastUnet": ApplyStableFastUnet,
-}
+NODE_CLASS_MAPPINGS = {}
 
 # A dictionary that contains the friendly/humanly readable titles for the nodes
-NODE_DISPLAY_NAME_MAPPINGS = {
-    "ApplyStableFastUnet": "Apply StableFast Unet",
-}
+NODE_DISPLAY_NAME_MAPPINGS = {}
+
+try:
+    from .node import ApplyStableFastUnet
+
+    SF_NODE_CLASS_MAPPINGS = {
+        "ApplyStableFastUnet": ApplyStableFastUnet,
+    }
+
+    SF_NODE_DISPLAY_NAME_MAPPINGS = {
+        "ApplyStableFastUnet": "Apply StableFast Unet",
+    }
+    NODE_CLASS_MAPPINGS.update(SF_NODE_CLASS_MAPPINGS)
+    NODE_DISPLAY_NAME_MAPPINGS.update(SF_NODE_DISPLAY_NAME_MAPPINGS)
+except Exception as e:
+    print("ComfyUI_stable_fast: StableFast node import failed.")
+    traceback.print_exception(*sys.exc_info()) 
 
 try:
     from .tensorrt_node import (
@@ -30,4 +43,7 @@ try:
     NODE_DISPLAY_NAME_MAPPINGS.update(TRT_NODE_DISPLAY_NAME_MAPPINGS)
 except Exception as e:
     print("ComfyUI_stable_fast: tensorrt_node import failed.")
-    print(e)
+    traceback.print_exception(*sys.exc_info()) 
+
+if len(NODE_CLASS_MAPPINGS) == 0:
+    raise Exception("import failed")

@@ -1,10 +1,7 @@
 import copy
 import enum
-import gc
-from io import BytesIO
 
 import torch
-from torch.cuda import nvtx
 
 import comfy.model_management
 import comfy.model_patcher
