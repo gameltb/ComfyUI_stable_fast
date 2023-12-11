@@ -2,6 +2,8 @@
 
 Experimental usage of [stable-fast](https://github.com/chengzeyi/stable-fast) and TensorRT.
 
+[Speed Test](##speed-test)
+
 # Installation
 
 ```bash
@@ -77,7 +79,31 @@ The Engine will be cached in `tensorrt_engine_cache`.
 
 ## Speed Test
 
-TBD
+### GeForce RTX 3060 Mobile
+
+GeForce RTX 3060 Mobile (80W) 6GB, Linux , torch 2.1.1, stable fast 0.0.14, tensorrt 9.2.0.post12.dev5, xformers 0.0.23.  
+[workflow](./tests/workflow.json): SD1.5, 512x512 bantch_size 1, euler_ancestral karras, 20 steps, use fp16.
+
+Test Stable Fast and xformers run ComfyUI with `--disable-cuda-malloc`.  
+Test TensorRT and pytorch run ComfyUI with `--disable-xformers`.
+
+For the TensorRT first launch, it will take up to 10 minutes to build the engine; with timing cache, it will reduce to about 2–3 minutes; with engine cache, it will reduce to about 20–30 seconds for now.
+
+#### Avg it/s
+
+|                               | Stable Fast(enable_cuda_graph) | TensorRT(UNET) | TensorRT(UNET_BLOCK) | pytorch cross attention | xformers |
+| ----------------------------- | ------------------------------ | -------------- | -------------------- | ----------------------- | -------- |
+|                               | 10.10 it/s                     | 10.95it/s      | 10.66it/s            | 7.02it/s                | 7.90it/s |
+| enable FreeU                  | 9.42 it/s                      | &cross;        | 10.04it/s            | 6.75it/s                | 7.54it/s |
+| enable PatchModelAddDownscale | 10.81 it/s                     | &cross;        | 11.30it/s            | 7.46it/s                | 8.41it/s |
+
+#### Avg time spent
+
+| workflow                      | Stable Fast(enable_cuda_graph) | TensorRT(UNET) | TensorRT(UNET_BLOCK) | pytorch cross attention | xformers |
+| ----------------------------- | ------------------------------ | -------------- | -------------------- | ----------------------- | -------- |
+|                               | 2.21s (first 17s)              | 2.05s          | 2.10s                | 3.06s                   | 2.76s    |
+| enable FreeU                  | 2.35s (first 18.5s)            | &cross;        | 2.24s                | 3.18s                   | 2.88     |
+| enable PatchModelAddDownscale | 2.08s (first 31.37s)           | &cross;        | 2.03s                | 2.89s                   | 2.61s    |
 
 # Screenshot
 
