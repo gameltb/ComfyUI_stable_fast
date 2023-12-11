@@ -2,7 +2,7 @@
 
 Experimental usage of [stable-fast](https://github.com/chengzeyi/stable-fast) and TensorRT.
 
-[Speed Test](##speed-test)
+[Speed Test](#speed-test)
 
 # Installation
 
@@ -91,19 +91,19 @@ For the TensorRT first launch, it will take up to 10 minutes to build the engine
 
 #### Avg it/s
 
-|                               | Stable Fast(enable_cuda_graph) | TensorRT(UNET) | TensorRT(UNET_BLOCK) | pytorch cross attention | xformers |
-| ----------------------------- | ------------------------------ | -------------- | -------------------- | ----------------------- | -------- |
-|                               | 10.10 it/s                     | 10.95it/s      | 10.66it/s            | 7.02it/s                | 7.90it/s |
-| enable FreeU                  | 9.42 it/s                      | &cross;        | 10.04it/s            | 6.75it/s                | 7.54it/s |
-| enable PatchModelAddDownscale | 10.81 it/s                     | &cross;        | 11.30it/s            | 7.46it/s                | 8.41it/s |
+|                               | Stable Fast (enable_cuda_graph) | TensorRT (UNET) | TensorRT (UNET_BLOCK) | pytorch cross attention | xformers |
+| ----------------------------- | ------------------------------- | --------------- | --------------------- | ----------------------- | -------- |
+|                               | 10.10 it/s                      | 10.95it/s       | 10.66it/s             | 7.02it/s                | 7.90it/s |
+| enable FreeU                  | 9.42 it/s                       | &cross;         | 10.04it/s             | 6.75it/s                | 7.54it/s |
+| enable PatchModelAddDownscale | 10.81 it/s                      | &cross;         | 11.30it/s             | 7.46it/s                | 8.41it/s |
 
 #### Avg time spent
 
-| workflow                      | Stable Fast(enable_cuda_graph) | TensorRT(UNET) | TensorRT(UNET_BLOCK) | pytorch cross attention | xformers |
-| ----------------------------- | ------------------------------ | -------------- | -------------------- | ----------------------- | -------- |
-|                               | 2.21s (first 17s)              | 2.05s          | 2.10s                | 3.06s                   | 2.76s    |
-| enable FreeU                  | 2.35s (first 18.5s)            | &cross;        | 2.24s                | 3.18s                   | 2.88     |
-| enable PatchModelAddDownscale | 2.08s (first 31.37s)           | &cross;        | 2.03s                | 2.89s                   | 2.61s    |
+| workflow                      | Stable Fast (enable_cuda_graph) | TensorRT (UNET) | TensorRT (UNET_BLOCK) | pytorch cross attention | xformers |
+| ----------------------------- | ------------------------------- | --------------- | --------------------- | ----------------------- | -------- |
+|                               | 2.21s (first 17s)               | 2.05s           | 2.10s                 | 3.06s                   | 2.76s    |
+| enable FreeU                  | 2.35s (first 18.5s)             | &cross;         | 2.24s                 | 3.18s                   | 2.88     |
+| enable PatchModelAddDownscale | 2.08s (first 31.37s)            | &cross;         | 2.03s                 | 2.89s                   | 2.61s    |
 
 # Screenshot
 
