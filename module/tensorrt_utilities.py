@@ -142,7 +142,7 @@ class TQDMProgressMonitor(trt.IProgressMonitor):
 
 
 class Engine:
-    def __init__(self, engine_path, enable_cuda_graph=True):
+    def __init__(self, engine_path, enable_cuda_graph=False):
         self.engine_path = engine_path
         self.engine = None
         self.context = None
