@@ -350,6 +350,7 @@ class Engine:
             )
         except Exception as e:
             raise Exception(f"Failed to build engine: {e}")
+        self.update_binding_set()
 
     def save_engine(self):
         print(f"Saveing TensorRT engine: {self.engine_path}")
@@ -365,6 +366,9 @@ class Engine:
             print(f"Loading TensorRT engine: {self.engine_path}")
             with zstandard.open(self.engine_path, "rb") as zrfp:
                 self.engine = engine_from_bytes(zrfp.read())
+        self.update_binding_set()
+    
+    def update_binding_set(self):
         self.binding_set = set()
         for idx in range(self.engine.num_io_tensors):
             self.binding_set.add(self.engine[idx])
@@ -376,7 +380,8 @@ class Engine:
         self.engine = None
 
     def offload(self):
-        self.refited_engine_byte = bytes_from_engine(self.engine)
+        if self.refited_engine_byte == None:
+            self.refited_engine_byte = bytes_from_engine(self.engine)
         self.unload()
         self.buffers = OrderedDict()
         self.tensors = OrderedDict()

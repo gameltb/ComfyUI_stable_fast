@@ -12,6 +12,8 @@ from torch.cuda import nvtx
 import comfy.ldm.modules.diffusionmodules.openaimodel
 import comfy.model_management
 import comfy.model_patcher
+import comfy.cldm.cldm
+import comfy.gligen
 
 from .comfy_trace_utilities import hash_arg
 from .tensorrt_utilities import Engine
@@ -151,17 +153,18 @@ class CallableTensorRTEngineWrapper:
                     self.onnx_cache.seek(0)
                     engine.refit_simple(self.onnx_cache, reset_zero=True)
                     engine.save_engine()
-                    del engine
-                    engine = get_engine_with_cache(
-                        engine_cache_key, TensorRTEngineConfig(enable_cuda_graph=False)
-                    )
 
                 self.engine = engine
                 try:
                     nvtx.range_push("load engine")
-                    self.engine.load()
+                    if self.engine.engine == None:
+                        self.engine.load()
                     self.device_memory_size = self.engine.engine.device_memory_size
-                    self.engine.unload()
+                    nvtx.range_push("refit engine")
+                    self.onnx_cache.seek(0)
+                    self.engine.refit_simple(self.onnx_cache)
+                    nvtx.range_pop()
+                    self.engine.activate(True)
                     self.engine_comfy_model_patcher_wrapper = (
                         TensorRTEngineComfyModelPatcherWrapper(
                             engine,
@@ -174,13 +177,10 @@ class CallableTensorRTEngineWrapper:
                         [
                             *self.tensorrt_context.keep_models,
                             self.engine_comfy_model_patcher_wrapper,
+                            *get_additional_keep_models(),
                         ],
                         self.device_memory_size,
                     )
-                    nvtx.range_push("refit engine")
-                    self.onnx_cache.seek(0)
-                    self.engine.refit_simple(self.onnx_cache)
-                    nvtx.range_pop()
                     self.input_profile_info = input_profile_info
                     self.engine_cache_map[engine_cache_key] = (
                         self.engine,
@@ -196,6 +196,7 @@ class CallableTensorRTEngineWrapper:
                 [
                     *self.tensorrt_context.keep_models,
                     self.engine_comfy_model_patcher_wrapper,
+                    *get_additional_keep_models(),
                 ],
                 self.device_memory_size,
             )
@@ -215,8 +216,9 @@ class CallableTensorRTEngineWrapper:
 class TensorRTEngineComfyModelPatcherWrapper(comfy.model_patcher.ModelPatcher):
     def patch_model(self, device_to=None):
         if device_to is not None:
-            self.model.load()
-            self.model.activate(True)
+            if self.model.engine == None:
+                self.model.load()
+                self.model.activate(True)
             self.current_device = device_to
 
         return self.model
@@ -225,6 +227,16 @@ class TensorRTEngineComfyModelPatcherWrapper(comfy.model_patcher.ModelPatcher):
         if device_to is not None:
             self.model.offload()
             self.current_device = device_to
+
+
+def get_additional_keep_models():
+    models = []
+    for model in comfy.model_management.current_loaded_models:
+        if isinstance(
+            model.real_model, (comfy.cldm.cldm.ControlNet, comfy.gligen.Gligen)
+        ):
+            models.append(model.model)
+    return models
 
 
 @dataclass

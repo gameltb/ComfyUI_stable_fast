@@ -49,18 +49,16 @@ class CallableTensorRTEngineWrapperDynamicShapeVAEDecode(CallableTensorRTEngineW
             "samples": {2: 2, 3: 2},
         }
         input_profile_info = {}
-        for arg_name in self.args_name:
-            shape_info = input_shape_info.get(arg_name, None)
+        for arg_name, shape_info in input_shape_info.items():
             min_shape_config = min_input_profile_info.get(arg_name, None)
-            if shape_info != None:
-                min_shape_info = list(shape_info)
-                if min_shape_config != None:
-                    for k, v in min_shape_config.items():
-                        min_shape_info[k] = v
-                input_profile_info[arg_name] = [
-                    tuple(min_shape_info),
-                    shape_info,
-                    shape_info,
-                ]
+            min_shape_info = list(shape_info)
+            if min_shape_config != None:
+                for k, v in min_shape_config.items():
+                    min_shape_info[k] = v
+            input_profile_info[arg_name] = [
+                tuple(min_shape_info),
+                shape_info,
+                shape_info,
+            ]
 
         return input_profile_info
