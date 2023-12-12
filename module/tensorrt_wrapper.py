@@ -140,9 +140,12 @@ class CallableTensorRTEngineWrapper:
                 comfy.model_management.soft_empty_cache()
                 nvtx.range_pop()
 
+                additional_keep_models = []
                 if engine == None:
+                    additional_keep_models = get_additional_keep_models()
                     comfy.model_management.free_memory(
-                        6 * 1024 * 1024 * 1024, self.tensorrt_context.cuda_device
+                        6 * 1024 * 1024 * 1024,
+                        self.tensorrt_context.cuda_device,
                     )
                     engine = gen_engine(
                         engine_cache_key,
@@ -178,6 +181,7 @@ class CallableTensorRTEngineWrapper:
                             *self.tensorrt_context.keep_models,
                             self.engine_comfy_model_patcher_wrapper,
                             *get_additional_keep_models(),
+                            *additional_keep_models,
                         ],
                         self.device_memory_size,
                     )
