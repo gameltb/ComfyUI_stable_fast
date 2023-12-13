@@ -9,9 +9,9 @@ from sfast.compilers.stable_diffusion_pipeline_compiler import (
 )
 from sfast.cuda.graphs import make_dynamic_graphed_callable
 from sfast.jit import utils as jit_utils
-from sfast.jit.trace_helper import to_module, trace_with_kwargs
+from sfast.jit.trace_helper import trace_with_kwargs
 
-from .comfy_trace_utilities import BaseModelApplyModel
+from .comfy_trace.model_base import BaseModelApplyModelModuleFactory
 
 logger = logging.getLogger()
 
@@ -57,10 +57,10 @@ class LazyTraceModule:
             m = make_dynamic_graphed_callable(m)
         return m
 
-    def __call__(self, model_function, *args, **kwargs):
-        module = BaseModelApplyModel(model_function, args, kwargs)
-        args, kwargs = module.convert_args()
-        key = module.gen_cache_key()
+    def __call__(self, model_function, /, **kwargs):
+        module_factory = BaseModelApplyModelModuleFactory(model_function, kwargs)
+        kwargs = module_factory.get_converted_kwargs()
+        key = module_factory.gen_cache_key()
 
         traced_module = self.cuda_graph_modules.get(key)
         if traced_module is None and not (
@@ -72,26 +72,25 @@ class LazyTraceModule:
                     traced_module_cache.patch_id != self.patch_id
                     or traced_module_cache.device == "meta"
                 ):
-                    model_function_module = to_module(model_function)
-                    next(
-                        next(traced_module_cache.module.children()).children()
-                    ).load_state_dict(
-                        model_function_module.state_dict(), strict=False, assign=True
-                    )
+                    with module_factory.converted_module_context() as (m_model, m_kwargs):
+                        next(
+                            next(traced_module_cache.module.children()).children()
+                        ).load_state_dict(
+                            m_model.state_dict(), strict=False, assign=True
+                        )
+
                     traced_module_cache.device = None
                     traced_module_cache.patch_id = self.patch_id
                 traced_module = traced_module_cache.module
 
         if traced_module is None:
-
-            def m_trace(m_model_function, m_args, m_kwargs):
-                func = to_module(m_model_function)
+            with module_factory.converted_module_context() as (m_model, m_kwargs):
                 logger.info(
-                    f'Tracing {getattr(func, "__name__", func.__class__.__name__)}'
+                    f'Tracing {getattr(m_model, "__name__", m_model.__class__.__name__)}'
                 )
-                return trace_with_kwargs(func, m_args, m_kwargs, **self.kwargs_)
-
-            traced_m, call_helper = module.do_with_convert_module(m_trace)
+                traced_m, call_helper = trace_with_kwargs(
+                    m_model, None, m_kwargs, **self.kwargs_
+                )
 
             traced_m = self.ts_compiler(traced_m)
             traced_module = call_helper(traced_m)
@@ -102,7 +101,7 @@ class LazyTraceModule:
                     module=traced_module, patch_id=self.patch_id, device=None
                 )
 
-        return traced_module(*args, **kwargs)
+        return traced_module(**kwargs)
 
     def to_empty(self):
         for v in self.traced_modules.values():

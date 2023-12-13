@@ -1,7 +1,7 @@
 import torch
 from sfast.compilers.stable_diffusion_pipeline_compiler import CompilationConfig
 
-from .module.stable_diffusion_pipeline_compiler import build_lazy_trace_module
+from .module.sfast_pipeline_compiler import build_lazy_trace_module
 
 
 def is_cuda_malloc_async():
@@ -59,7 +59,9 @@ class StableFastPatch:
                 id(self),
             )
 
-        return self.stable_fast_model(model_function, input_x, timestep_, **c)
+        return self.stable_fast_model(
+            model_function, input_x=input_x, timestep=timestep_, **c
+        )
 
     def to(self, device):
         if type(device) == torch.device:

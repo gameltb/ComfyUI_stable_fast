@@ -7,12 +7,13 @@ import comfy.model_management
 import comfy.model_patcher
 import nodes
 
-from .module.comfy_trace_utilities import BaseModelApplyModel
+from .module.comfy_trace.model_base import BaseModelApplyModelModuleFactory
+from .module.comfy_trace.sd import VAEDecodeModule
+from .module.comfy_trace_utilities import TracerWithCache
 from .module.controlnet_tensorrt import (
     CallableTensorRTEngineWrapperDynamicShapeControlNet,
 )
 from .module.model_base_tensorrt import (
-    BaseModelApplyModelModule,
     CallableTensorRTEngineWrapperDynamicShapeBaseModelApplyModel,
 )
 from .module.openaimodel_tensorrt import (
@@ -21,10 +22,7 @@ from .module.openaimodel_tensorrt import (
     do_hook_forward_timestep_embed,
     undo_hook_forward_timestep_embed,
 )
-from .module.sd_tensorrt import (
-    CallableTensorRTEngineWrapperDynamicShapeVAEDecode,
-    VAEDecodeModule,
-)
+from .module.sd_tensorrt import CallableTensorRTEngineWrapperDynamicShapeVAEDecode
 from .module.tensorrt_wrapper import TensorRTEngineConfig, TensorRTEngineContext
 
 
@@ -172,15 +170,12 @@ class UnetTensorRTPatch(BlockTensorRTPatch):
         self.tensorrt_context.cuda_device = input_x.device
         # self.tensorrt_context.dtype = input_x.dtype
 
-        module = BaseModelApplyModel(model_function, (input_x, timestep_), c)
-        args, kwargs = module.convert_args()
-
-        out = self.tensorrt_module(
-            BaseModelApplyModelModule(model_function, model_function.__self__),
-            input_x=input_x,
-            timestep=timestep_,
-            **kwargs,
+        module_factory = BaseModelApplyModelModuleFactory(
+            model_function, {"input_x": input_x, "timestep": timestep_, **c}
         )
+
+        with module_factory.converted_module_context() as (m_model, m_kwargs):
+            out = self.tensorrt_module(m_model, **m_kwargs)
 
         return out
 

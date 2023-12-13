@@ -43,7 +43,7 @@ class CallableTensorRTEngineWrapper:
 
         self.engine_cache_map = {}
 
-    def gen_onnx_args(self, kwargs):
+    def gen_onnx_args(self, kwargs, module=None):
         args = []
         args_name = []
         for arg_name, arg in kwargs.items():
@@ -116,7 +116,9 @@ class CallableTensorRTEngineWrapper:
 
                 if self.onnx_cache == None:
                     module.to(device=self.tensorrt_context.cuda_device)
-                    args, args_name, dynamic_axes = self.gen_onnx_args(kwargs)
+                    args, args_name, dynamic_axes = self.gen_onnx_args(
+                        kwargs, module=module
+                    )
                     self.onnx_cache = BytesIO()
                     try:
                         th.onnx.export(

@@ -55,7 +55,13 @@ class PatchModelAddDownscale_input_block_patch(torch.nn.Module):
         flag = 0
         if self.sigma <= self.sigma_start and self.sigma >= self.sigma_end:
             flag = 1
-        return [self.__class__.__name__, flag, self.block_number, self.downscale_method, self.downscale_factor]
+        return [
+            self.__class__.__name__,
+            flag,
+            self.block_number,
+            self.downscale_method,
+            self.downscale_factor,
+        ]
 
 
 class PatchModelAddDownscale_output_block_patch(torch.nn.Module):

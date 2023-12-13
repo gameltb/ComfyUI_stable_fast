@@ -7,12 +7,14 @@ import torch as th
 import comfy.ldm.modules.diffusionmodules.openaimodel
 import comfy.model_management
 import comfy.model_patcher
-from comfy.ldm.modules.diffusionmodules.openaimodel import forward_timestep_embed
 from .tensorrt_wrapper import TensorRTEngineContext, CallableTensorRTEngineWrapper
+from .comfy_trace.openaimodel import (
+    ForwardTimestepEmbedModule,
+    origin_forward_timestep_embed,
+)
+
 
 TENSORRT_CONTEXT_KEY = "tensorrt_context"
-
-origin_forward_timestep_embed = forward_timestep_embed
 
 
 @dataclass
@@ -43,7 +45,7 @@ class CallableTensorRTEngineWrapperDynamicShapeForwardTimestep(
         "image_only_indicator",
     ]
 
-    def gen_onnx_args(self, kwargs):
+    def gen_onnx_args(self, kwargs,module=None):
         args_name = []
         args = []
         for arg_name in self.args_name:
@@ -93,37 +95,6 @@ class CallableTensorRTEngineWrapperDynamicShapeForwardTimestep(
             ]
 
         return input_profile_info
-
-
-class ForwardTimestepEmbedModule(th.nn.Module):
-    def __init__(self, ts, transformer_options={}, num_video_frames=None):
-        super().__init__()
-        self.module = ts
-        self.transformer_options = transformer_options
-        self.num_video_frames = num_video_frames
-
-    def forward(
-        self,
-        x,
-        emb,
-        context=None,
-        output_shape_tensor=None,
-        time_context=None,
-        image_only_indicator=None,
-    ):
-        return origin_forward_timestep_embed(
-            self.module,
-            x,
-            emb,
-            context=context,
-            transformer_options=self.transformer_options,
-            output_shape=output_shape_tensor
-            if output_shape_tensor == None
-            else output_shape_tensor.shape,
-            time_context=time_context,
-            num_video_frames=self.num_video_frames,
-            image_only_indicator=image_only_indicator,
-        )
 
 
 def hook_forward_timestep_embed(

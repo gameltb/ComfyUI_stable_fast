@@ -3,34 +3,6 @@ import torch
 from .tensorrt_wrapper import CallableTensorRTEngineWrapper
 
 
-class BaseModelApplyModelModule(torch.nn.Module):
-    def __init__(self, func, module):
-        super().__init__()
-        self.func = func
-        self.module = module
-
-    def forward(
-        self,
-        input_x,
-        timestep,
-        c_concat=None,
-        c_crossattn=None,
-        y=None,
-        control=None,
-        transformer_options={},
-    ):
-        kwargs = {"y": y}
-        return self.func(
-            input_x,
-            timestep,
-            c_concat=c_concat,
-            c_crossattn=c_crossattn,
-            control=control,
-            transformer_options=transformer_options,
-            **kwargs,
-        )
-
-
 class CallableTensorRTEngineWrapperDynamicShapeBaseModelApplyModel(
     CallableTensorRTEngineWrapper
 ):
@@ -43,7 +15,7 @@ class CallableTensorRTEngineWrapperDynamicShapeBaseModelApplyModel(
         "control",
     ]
 
-    def gen_onnx_args(self, kwargs):
+    def gen_onnx_args(self, kwargs, module=None):
         dynamic_axes = {
             "input_x": {0: "B", 2: "H", 3: "W"},
             "timestep": {0: "B"},
@@ -52,22 +24,27 @@ class CallableTensorRTEngineWrapperDynamicShapeBaseModelApplyModel(
         args_name = []
         args = []
         for arg_name in self.args_name:
-            args.append(kwargs.get(arg_name, None))
-            if args[-1] != None:
-                if arg_name == "control":
-                    control_params = args[-1]
-                    for key in control_params:
-                        for i, v in enumerate(control_params[key]):
-                            control_params_name = f"{arg_name}_{key}_{i}"
-                            args_name.append(control_params_name)
-                            dynamic_axes[control_params_name] = {
-                                0: "B",
-                                2: f"{control_params_name}_H",
-                                3: f"{control_params_name}_W",
-                            }
-                else:
-                    args_name.append(arg_name)
-        args.append({})
+            arg = kwargs.get(arg_name, None)
+            if arg != None or not isinstance(
+                module, (torch.jit.ScriptFunction, torch.jit.ScriptModule)
+            ):
+                args.append(arg)
+                if arg != None:
+                    if arg_name == "control":
+                        control_params = arg
+                        for key in control_params:
+                            for i, v in enumerate(control_params[key]):
+                                control_params_name = f"{arg_name}_{key}_{i}"
+                                args_name.append(control_params_name)
+                                dynamic_axes[control_params_name] = {
+                                    0: "B",
+                                    2: f"{control_params_name}_H",
+                                    3: f"{control_params_name}_W",
+                                }
+                    else:
+                        args_name.append(arg_name)
+        if not isinstance(module, (torch.jit.ScriptFunction, torch.jit.ScriptModule)):
+            args.append({})
         for k in list(dynamic_axes.keys()):
             if not k in args_name:
                 dynamic_axes.pop(k)

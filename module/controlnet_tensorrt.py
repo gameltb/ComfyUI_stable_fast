@@ -6,7 +6,7 @@ class CallableTensorRTEngineWrapperDynamicShapeControlNet(
 ):
     args_name = ["x", "hint", "timesteps", "context", "y"]
 
-    def gen_onnx_args(self, kwargs):
+    def gen_onnx_args(self, kwargs, module=None):
         args_name = []
         args = []
         for arg_name in self.args_name:

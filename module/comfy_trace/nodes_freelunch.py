@@ -4,7 +4,7 @@ import torch
 import copy
 
 
-def Fourier_filter(x, threshold:int, scale:float):
+def Fourier_filter(x, threshold: int, scale: float):
     # FFT
     x_freq = torch.fft.fftn(x.float(), dim=(-2, -1))
     x_freq = torch.fft.fftshift(x_freq, dim=(-2, -1))
@@ -24,13 +24,14 @@ def Fourier_filter(x, threshold:int, scale:float):
 
     return x_filtered.to(x.dtype)
 
+
 class FreeU(torch.nn.Module):
     def __init__(self, scale_map):
         super().__init__()
         self.scale_map = scale_map
 
     def forward(self, h, hsp, parameter, transformer_options):
-        for k, scale in zip(self.scale_map,parameter):
+        for k, scale in zip(self.scale_map, parameter):
             if k == h.shape[1]:
                 h[:, : h.shape[1] // 2] = h[:, : h.shape[1] // 2] * scale[0]
                 hsp = Fourier_filter(hsp, threshold=1, scale=scale[1])
@@ -44,17 +45,18 @@ class FreeU(torch.nn.Module):
                 scale_dict = copy.deepcopy(var.cell_contents)
                 break
         return FreeU(list(scale_dict.keys())), torch.Tensor(list(scale_dict.values()))
-    
+
     def gen_cache_key(self):
-        return [self.__class__.__name__,self.scale_map]
-    
+        return [self.__class__.__name__, self.scale_map]
+
+
 class FreeU_V2(torch.nn.Module):
     def __init__(self, scale_map):
         super().__init__()
         self.scale_map = scale_map
-    
+
     def forward(self, h, hsp, parameter, transformer_options):
-        for k, scale in zip(self.scale_map,parameter):
+        for k, scale in zip(self.scale_map, parameter):
             if k == h.shape[1]:
                 hidden_mean = h.mean(1).unsqueeze(1)
                 B = hidden_mean.shape[0]
@@ -79,7 +81,9 @@ class FreeU_V2(torch.nn.Module):
             if var_name == "scale_dict":
                 scale_dict = copy.deepcopy(var.cell_contents)
                 break
-        return FreeU_V2(list(scale_dict.keys())), torch.Tensor(list(scale_dict.values()))
+        return FreeU_V2(list(scale_dict.keys())), torch.Tensor(
+            list(scale_dict.values())
+        )
 
     def gen_cache_key(self):
-        return [self.__class__.__name__,self.scale_map]
+        return [self.__class__.__name__, self.scale_map]

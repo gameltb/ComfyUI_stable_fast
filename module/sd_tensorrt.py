@@ -1,16 +1,4 @@
-import torch as th
-
 from .tensorrt_wrapper import CallableTensorRTEngineWrapper
-
-
-class VAEDecodeModule(th.nn.Module):
-    def __init__(self, module, decode):
-        super().__init__()
-        self.module = module
-        self.decode = decode
-
-    def forward(self, samples):
-        return self.decode(samples)
 
 
 class CallableTensorRTEngineWrapperDynamicShapeVAEDecode(CallableTensorRTEngineWrapper):
@@ -18,7 +6,7 @@ class CallableTensorRTEngineWrapperDynamicShapeVAEDecode(CallableTensorRTEngineW
         "samples",
     ]
 
-    def gen_onnx_args(self, kwargs):
+    def gen_onnx_args(self, kwargs,module=None):
         args_name = []
         args = []
         for arg_name in self.args_name:

@@ -1,16 +1,6 @@
-from .comfy_trace.nodes_freelunch import FreeU, FreeU_V2
-from .comfy_trace.openaimodel import PatchUNetModel
-from .comfy_trace.nodes_model_downscale import (
-    PatchModelAddDownscale_input_block_patch,
-    PatchModelAddDownscale_output_block_patch,
-)
-
-PATCH_PATCH_MAP = {
-    "FreeU.patch.<locals>.output_block_patch": FreeU,
-    "FreeU_V2.patch.<locals>.output_block_patch": FreeU_V2,
-    "PatchModelAddDownscale.patch.<locals>.input_block_patch": PatchModelAddDownscale_input_block_patch,
-    "PatchModelAddDownscale.patch.<locals>.output_block_patch": PatchModelAddDownscale_output_block_patch,
-}
+import contextlib
+import copy
+import torch
 
 
 def hash_arg(arg):
@@ -28,83 +18,67 @@ def hash_arg(arg):
     return type(arg)
 
 
-class BaseModelApplyModel:
-    def __init__(self, model_function, args, kwargs) -> None:
-        self.model_function = model_function
-        self.unet_config = model_function.__self__.model_config.unet_config
-        self.args = args
+class ModuleWrapper(torch.nn.Module):
+    def __init__(self, module):
+        super().__init__()
+        self.module = module
+
+    def forward(self, *args, **kwargs):
+        return self.module(*args, **kwargs)
+
+
+class ModuleFactory:
+    def __init__(self, callable, kwargs) -> None:
+        self.callable = callable
         self.kwargs = kwargs
-        self.patch_module = {}
-        self.patch_module_parameter = {}
+        self.converted_kwargs = self.gen_converted_kwargs()
 
-    def convert_args(self):
-        transformer_options = self.kwargs.get("transformer_options", {})
-        patches = transformer_options.get("patches", {})
+    def gen_converted_kwargs(self):
+        return self.kwargs
 
-        patch_module = {}
-        patch_module_parameter = {}
+    def get_converted_kwargs(self):
+        return self.converted_kwargs
 
-        for patch_type_name, patch_list in patches.items():
-            patch_module[patch_type_name] = []
-            patch_module_parameter[patch_type_name] = []
-            for patch in patch_list:
-                if patch.__qualname__ in PATCH_PATCH_MAP:
-                    patch, parameter = PATCH_PATCH_MAP[patch.__qualname__].from_closure(
-                        patch, transformer_options
-                    )
-                    patch_module[patch_type_name].append(patch)
-                    patch_module_parameter[patch_type_name].append(parameter)
-                    # output_block_patch_module.append(torch.jit.script(patch))
-                else:
-                    print(f"\33[93mWarning: Ignore patch {patch.__qualname__}.\33[0m")
-
-        transformer_options["patches"] = patch_module_parameter
-
-        self.patch_module = patch_module
-        self.patch_module_parameter = patch_module_parameter
-        return self.args, self.kwargs
-
-    def gen_cache_key(self, shape_info={}):
-        key_kwargs = {}
-        for k, v in self.kwargs.items():
-            if k == "transformer_options":
-                nv = {}
-                for tk, tv in v.items():
-                    if not tk in ("patches"):  # ,"cond_or_uncond"
-                        nv[tk] = tv
-                v = nv
-            key_kwargs[k] = v
-
-        patch_module_cache_key = {}
-        for patch_type_name, patch_list in self.patch_module.items():
-            patch_module_cache_key[patch_type_name] = []
-            for patch in patch_list:
-                patch_module_cache_key[patch_type_name].append(patch.gen_cache_key())
-
+    def gen_cache_key(self):
         return (
-            hash_arg(self.unet_config),
-            hash_arg(self.args),
-            hash_arg(key_kwargs),
-            hash_arg(patch_module_cache_key),
-            hash_arg(shape_info),
+            self.callable.__class__.__qualname__,
+            hash_arg(self.kwargs),
         )
 
-    def do_with_convert_module(self, func):
-        if len(self.patch_module) > 0:
-            self.model_function.__self__.diffusion_model = PatchUNetModel.cast_from(
-                self.model_function.__self__.diffusion_model
+    @contextlib.contextmanager
+    def converted_module_context(self):
+        yield (self.callable, self.converted_kwargs)
+
+    def load_state_dict_to_module(self, script_module):
+        with self.converted_module_context() as (m_model, m_kwargs):
+            script_module.load_state_dict(
+                m_model.state_dict(), strict=False, assign=True
             )
-            try:
-                self.model_function.__self__.diffusion_model.set_patch_module(
-                    self.patch_module
+        return script_module
+
+
+class TracerWithCache:
+    cache_map = {}
+
+    @staticmethod
+    def get_traced_module(module_factory: ModuleFactory, device=None):
+        cache_key = module_factory.gen_cache_key()
+
+        if not cache_key in TracerWithCache.cache_map:
+            with module_factory.converted_module_context() as (m_model, m_kwargs):
+                if device != None:
+                    m_model.to(device=device)
+                script_module = torch.jit.trace(
+                    m_model,
+                    example_kwarg_inputs=m_kwargs,
+                    strict=True,
+                    check_trace=True,
                 )
 
-                result = func(self.model_function, self.args, self.kwargs)
-            finally:
-                self.model_function.__self__.diffusion_model = (
-                    self.model_function.__self__.diffusion_model.cast_to_base_model()
-                )
-        else:
-            result = func(self.model_function, self.args, self.kwargs)
+            meta_script_module = script_module.to_empty(device="meta")
+            TracerWithCache.cache_map[cache_key] = meta_script_module
 
-        return result
+        meta_script_module = copy.deepcopy(TracerWithCache.cache_map[cache_key])
+
+        script_module = module_factory.load_state_dict_to_module(meta_script_module)
+        return script_module

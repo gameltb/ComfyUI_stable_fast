@@ -5,6 +5,38 @@ import copy
 from comfy.ldm.modules.diffusionmodules.openaimodel import UNetModel,forward_timestep_embed,apply_control
 from comfy.ldm.modules.diffusionmodules.util import timestep_embedding
 
+origin_forward_timestep_embed = forward_timestep_embed
+
+class ForwardTimestepEmbedModule(th.nn.Module):
+    def __init__(self, ts, transformer_options={}, num_video_frames=None):
+        super().__init__()
+        self.module = ts
+        self.transformer_options = transformer_options
+        self.num_video_frames = num_video_frames
+
+    def forward(
+        self,
+        x,
+        emb,
+        context=None,
+        output_shape_tensor=None,
+        time_context=None,
+        image_only_indicator=None,
+    ):
+        return origin_forward_timestep_embed(
+            self.module,
+            x,
+            emb,
+            context=context,
+            transformer_options=self.transformer_options,
+            output_shape=output_shape_tensor
+            if output_shape_tensor == None
+            else output_shape_tensor.shape,
+            time_context=time_context,
+            num_video_frames=self.num_video_frames,
+            image_only_indicator=image_only_indicator,
+        )
+
 
 class PatchUNetModel(UNetModel):
 
