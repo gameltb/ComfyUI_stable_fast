@@ -78,6 +78,16 @@ class BlockTensorRTPatch:
                 device=c_concat.device,
                 dtype=c_concat.dtype,
             )
+        y = c.get("y", None)
+        if y != None:
+            warmup_c["y"] = torch.zeros(
+                (
+                    self.config.keep_batch_size * 2,
+                    y.shape[1],
+                ),
+                device=y.device,
+                dtype=y.dtype,
+            )
 
         self(
             model_function,
