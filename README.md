@@ -12,6 +12,8 @@ git clone https://github.com/gameltb/ComfyUI_stable_fast custom_nodes/ComfyUI_st
 
 ## stable-fast
 
+You'll need to follow the guide below to enable stable fast node.
+
 [stable-fast installation](https://github.com/chengzeyi/stable-fast?tab=readme-ov-file#installation)
 
 ## TensorRT(testing)
@@ -20,8 +22,7 @@ git clone https://github.com/gameltb/ComfyUI_stable_fast custom_nodes/ComfyUI_st
 >
 > Currently only tested on linux, Not tested on Windows.
 
-The following needs to be installed when you use TensorRT.  
-Even if you don't install these, the stable-fast node is still available.
+The following needs to be installed when you use TensorRT.
 
 ```bash
 pip install onnx zstandard
@@ -41,7 +42,6 @@ Run ComfyUI with `--disable-cuda-malloc` may be possible to optimize the speed f
 > [!NOTE]
 >
 > - FreeU and PatchModelAddDownscale are now supported experimentally, Just use the comfy node normally.
-> - If you are using WSL, please do not install Triton for the time being due to bugs.
 > - stable fast not work well with accelerate, So this node has no effect when the vram is low. For example: 6G vram card run SDXL.
 > - stable fast will optimize the speed when generating images using the same model for the second time. if you switch models or Lora frequently, please consider disable enable_cuda_graph.
 > - stable fast should be directly connected to ksampler, and it is better not to have other nodes between them.
@@ -86,6 +86,8 @@ GeForce RTX 3060 Mobile (80W) 6GB, Linux , torch 2.1.1, stable fast 0.0.14, tens
 
 Test Stable Fast and xformers run ComfyUI with `--disable-cuda-malloc`.  
 Test TensorRT and pytorch run ComfyUI with `--disable-xformers`.
+
+###### TensorRT Note
 
 For the TensorRT first launch, it will take up to 10 minutes to build the engine; with timing cache, it will reduce to about 2–3 minutes; with engine cache, it will reduce to about 20–30 seconds for now.
 
