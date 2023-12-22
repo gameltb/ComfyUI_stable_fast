@@ -1,5 +1,5 @@
 import torch
-from sfast.compilers.stable_diffusion_pipeline_compiler import CompilationConfig
+from sfast.compilers.diffusion_pipeline_compiler import CompilationConfig
 
 from .module.sfast_pipeline_compiler import build_lazy_trace_module
 

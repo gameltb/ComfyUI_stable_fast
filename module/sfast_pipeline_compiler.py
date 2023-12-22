@@ -3,7 +3,7 @@ import logging
 from dataclasses import dataclass
 
 import torch
-from sfast.compilers.stable_diffusion_pipeline_compiler import (
+from sfast.compilers.diffusion_pipeline_compiler import (
     _enable_xformers,
     _modify_model,
 )
