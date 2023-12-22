@@ -34,6 +34,9 @@ class BlockTensorRTPatch:
         self.config = config
         self.model_device = torch.device("cpu")
 
+    def __deepcopy__(self, memo=None):
+        return self
+
     def warmup(self, model_function, params):
         input_x = params.get("input")
         timestep_ = params.get("timestep")
@@ -156,6 +159,9 @@ class UnetTensorRTPatch(BlockTensorRTPatch):
         self.model_device = torch.device("cpu")
         self.tensorrt_module = None
         self.tensorrt_context = TensorRTEngineContext()
+
+    def __deepcopy__(self, memo=None):
+        return self
 
     def __call__(self, model_function, params):
         input_x = params.get("input")

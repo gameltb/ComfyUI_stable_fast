@@ -43,6 +43,9 @@ class StableFastPatch:
         self.config = config
         self.stable_fast_model = None
 
+    def __deepcopy__(self, memo=None):
+        return self
+
     def __call__(self, model_function, params):
         input_x = params.get("input")
         timestep_ = params.get("timestep")

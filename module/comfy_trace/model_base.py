@@ -35,13 +35,18 @@ class BaseModelApplyModelModule(torch.nn.Module):
         transformer_options={},
     ):
         kwargs = {"y": y}
+
+        new_transformer_options = {}
+        if "patches" in transformer_options:
+            new_transformer_options["patches"] = transformer_options["patches"]
+
         return self.func(
             input_x,
             timestep,
             c_concat=c_concat,
             c_crossattn=c_crossattn,
             control=control,
-            transformer_options=copy.deepcopy(transformer_options),
+            transformer_options=new_transformer_options,
             **kwargs,
         )
 
