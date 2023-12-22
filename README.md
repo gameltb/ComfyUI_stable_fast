@@ -48,7 +48,7 @@ Run ComfyUI with `--disable-cuda-malloc` may be possible to optimize the speed f
 > - FreeU and PatchModelAddDownscale are now supported experimentally, Just use the comfy node normally.
 > - stable fast not work well with accelerate, So this node has no effect when the vram is low. For example: 6G vram card run SDXL.
 > - stable fast will optimize the speed when generating images using the same model for the second time. if you switch models or Lora frequently, please consider disable enable_cuda_graph.
-> - stable fast should be directly connected to ksampler, and it is better not to have other nodes between them.
+> - **It is better to connect the `Apply StableFast Unet` node directly to the `KSampler` node, and there should be no nodes between them that will change the weight, such as the `Load LoRA` node, but for some nodes, placing it between them can prevent useless recompilation caused by modifying the node parameters, such as the `FreeU` node, you can try to use other nodes, but I can't guarantee that it will work properly.**
 
 ## TensorRT(testing)
 
