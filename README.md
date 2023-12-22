@@ -16,6 +16,10 @@ You'll need to follow the guide below to enable stable fast node.
 
 [stable-fast installation](https://github.com/chengzeyi/stable-fast?tab=readme-ov-file#installation)
 
+> [!NOTE]
+>
+> Requires stable-fast >= 1.0.0 .
+
 ## TensorRT(testing)
 
 > [!NOTE]
