@@ -20,6 +20,7 @@ class CallableTensorRTEngineWrapperDynamicShapeBaseModelApplyModel(
             "input_x": {0: "B", 2: "H", 3: "W"},
             "timestep": {0: "B"},
             "c_crossattn": {0: "B", 1: "E"},
+            "y": {0: "B"},
         }
         args_name = []
         args = []
@@ -74,6 +75,7 @@ class CallableTensorRTEngineWrapperDynamicShapeBaseModelApplyModel(
             "input_x": {0: 1, 2: 2, 3: 2},
             "timestep": {0: 1},
             "c_crossattn": {0: 1, 1: 77},
+            "y": {0: 1},
         }
         input_profile_info = {}
         for arg_name, shape_info in input_shape_info.items():

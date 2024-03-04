@@ -220,7 +220,7 @@ class TensorRTEngineOriginModelPatcherWrapper_BlockPatch(
 
         if device_to is not None:
             for name, module in model.named_children():
-                if name in ("diffusion_model"):
+                if name in ("diffusion_model",):
                     for name, module in module.named_children():
                         if not name in (
                             "input_blocks",
