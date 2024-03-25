@@ -215,7 +215,7 @@ class TensorRTEngineOriginModelPatcherWrapper_BlockPatch(
         self.__class__ = comfy.model_patcher.ModelPatcher
         return self
 
-    def patch_model(self, device_to=None):
+    def patch_model(self, device_to=None, *arg, **kwargs):
         model = super().patch_model()
 
         if device_to is not None:
@@ -253,7 +253,7 @@ class TensorRTEngineOriginModelPatcherWrapper_UnetPatch(
         self.__class__ = comfy.model_patcher.ModelPatcher
         return self
 
-    def patch_model(self, device_to=None):
+    def patch_model(self, device_to=None, *arg, **kwargs):
         model = super().patch_model()
 
         if device_to is not None:

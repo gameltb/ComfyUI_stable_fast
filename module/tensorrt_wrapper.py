@@ -220,7 +220,7 @@ class CallableTensorRTEngineWrapper:
 
 
 class TensorRTEngineComfyModelPatcherWrapper(comfy.model_patcher.ModelPatcher):
-    def patch_model(self, device_to=None):
+    def patch_model(self, device_to=None, *arg, **kwargs):
         if device_to is not None:
             if self.model.engine == None:
                 self.model.load()
@@ -229,7 +229,7 @@ class TensorRTEngineComfyModelPatcherWrapper(comfy.model_patcher.ModelPatcher):
 
         return self.model
 
-    def unpatch_model(self, device_to=None):
+    def unpatch_model(self, device_to=None, *arg, **kwargs):
         if device_to is not None:
             self.model.offload()
             self.current_device = device_to
