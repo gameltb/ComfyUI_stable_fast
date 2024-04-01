@@ -163,105 +163,14 @@ class Engine:
         del self.buffers
         del self.tensors
 
-    def refit_simple(self, onnx_path, dump_refit_path=None, reset_zero=False):
-        def convert_int64(arr):
-            # TODO: smarter conversion
-            if len(arr.shape) == 0:
-                return np.int32(arr)
-            return arr
+    def refit_simple(self, onnx_bytes):
+        print(f"Refitting TensorRT engine with {onnx_bytes} weights")
 
-        def add_to_map(refit_dict, name, values):
-            if name in refit_dict:
-                assert refit_dict[name] is None
-                if values.dtype == np.int64:
-                    values = convert_int64(values)
-                refit_dict[name] = values
-
-        print(f"Refitting TensorRT engine with {onnx_path} weights")
-
-        # Construct refit dictionary
-        refit_dict = {}
         refitter = trt.Refitter(self.engine, TRT_LOGGER)
-        all_weights = refitter.get_all()
-        for layer_name, role in zip(all_weights[0], all_weights[1]):
-            # for specialized roles, use a unique name in the map:
-            if role == trt.WeightsRole.KERNEL:
-                name = layer_name + "_TRTKERNEL"
-            elif role == trt.WeightsRole.BIAS:
-                name = layer_name + "_TRTBIAS"
-            else:
-                name = layer_name
+        parser_refitter = trt.OnnxParserRefitter(refitter, TRT_LOGGER)
+        result = parser_refitter.refit_from_bytes(onnx_bytes.getvalue())
 
-            assert name not in refit_dict, "Found duplicate layer: " + name
-            refit_dict[name] = None
-
-        for n in gs.import_onnx(onnx.load(onnx_path)).toposort().nodes:
-            # Constant nodes in ONNX do not have inputs but have a constant output
-            if n.op == "Constant":
-                name = n.outputs[0].name
-                if isinstance(n.outputs[0], gs.Constant):
-                    try:
-                        add_to_map(refit_dict, name, n.outputs[0].values)
-                    except:
-                        error(f"Failed to add Constant {name}")
-
-            # Handle scale and bias weights
-            elif n.op == "Conv":
-                if n.inputs[1].__class__ == gs.Constant:
-                    name = n.name + "_TRTKERNEL"
-                    try:
-                        add_to_map(refit_dict, name, n.inputs[1].values)
-                    except:
-                        error(f"Failed to add Conv {name}")
-
-                if n.inputs[2].__class__ == gs.Constant:
-                    name = n.name + "_TRTBIAS"
-                    try:
-                        add_to_map(refit_dict, name, n.inputs[2].values)
-                    except:
-                        error(f"Failed to add Conv {name}")
-
-            # For all other nodes: find node inputs that are initializers (AKA gs.Constant)
-            else:
-                for inp in n.inputs:
-                    name = inp.name
-                    if inp.__class__ == gs.Constant:
-                        try:
-                            add_to_map(refit_dict, name, inp.values)
-                        except:
-                            error(f"Failed to add Constant {name}")
-
-        if dump_refit_path is not None:
-            print("Finished refit. Dumping result to disk.")
-            save_file(
-                refit_dict, dump_refit_path
-            )  # TODO need to come up with delta system to save only changed weights
-            return
-
-        for layer_name, weights_role in zip(all_weights[0], all_weights[1]):
-            if weights_role == trt.WeightsRole.KERNEL:
-                custom_name = layer_name + "_TRTKERNEL"
-            elif weights_role == trt.WeightsRole.BIAS:
-                custom_name = layer_name + "_TRTBIAS"
-            else:
-                custom_name = layer_name
-
-            # Skip refitting Trilu for now; scalar weights of type int64 value 1 - for clip model
-            if layer_name.startswith("onnx::Trilu"):
-                continue
-
-            if refit_dict[custom_name] is not None:
-                refitter.set_weights(
-                    layer_name,
-                    weights_role,
-                    refit_dict[custom_name]
-                    if not reset_zero
-                    else np.zeros_like(refit_dict[custom_name]),
-                )
-            else:
-                print(f"[W] No refit weights for layer: {layer_name}")
-
-        if not refitter.refit_cuda_engine():
+        if not result or not refitter.refit_cuda_engine():
             raise Exception("Failed to refit!")
 
     def build(
@@ -302,7 +211,7 @@ class Engine:
             p = [Profile() for i in range(len(input_profile))]
             for _p, i_profile in zip(p, input_profile):
                 for name, dims in i_profile.items():
-                    if not name in input_names:
+                    if name not in input_names:
                         continue
                     assert len(dims) == 3
                     _p.add(name, min=dims[0], opt=dims[1], max=dims[2])
@@ -315,7 +224,10 @@ class Engine:
             config.set_flag(trt.BuilderFlag.FP16)
         elif dtype == torch.bfloat16:
             config.set_flag(trt.BuilderFlag.BF16)
-        config.set_flag(trt.BuilderFlag.REFIT) if enable_refit else None
+
+        if enable_refit:
+            config.set_flag(trt.BuilderFlag.STRIP_PLAN)
+            config.set_flag(trt.BuilderFlag.REFIT)
 
         # config.set_preview_feature(
         #     trt.PreviewFeature.DISABLE_EXTERNAL_TACTIC_SOURCES_FOR_CORE_0805, False
@@ -407,23 +319,27 @@ class Engine:
     ):
         nvtx.range_push("allocate_buffers")
         for idx in range(self.engine.num_io_tensors):
-            binding = self.engine[idx]
-            if shape_dict and binding in shape_dict:
-                shape = shape_dict[binding].shape
+            tensor_name = self.engine.get_tensor_name(idx)
+
+            if shape_dict and tensor_name in shape_dict:
+                shape = shape_dict[tensor_name].shape
             else:
-                shape = self.context.get_binding_shape(idx)
-            if binding in self.tensors and self.tensors[binding].shape == shape:
+                shape = self.context.get_tensor_shape(tensor_name)
+            shape = list(shape)
+            if (
+                tensor_name in self.tensors
+                and list(self.tensors[tensor_name].shape) == shape
+            ):
                 continue
-            dtype = trt.nptype(self.engine.get_binding_dtype(binding))
-            if self.engine.binding_is_input(binding):
-                self.context.set_binding_shape(idx, shape)
-            if self.engine.binding_is_input(binding):
-                if not allocate_input_buffers or not binding in shape_dict:
+            dtype = trt.nptype(self.engine.get_tensor_dtype(tensor_name))
+            if self.engine.get_tensor_mode(tensor_name) == trt.TensorIOMode.INPUT:
+                self.context.set_input_shape(tensor_name, shape)
+                if not allocate_input_buffers or tensor_name not in shape_dict:
                     continue
             tensor = torch.empty(
                 tuple(shape), dtype=numpy_to_torch_dtype_dict[dtype], device=device
             )
-            self.tensors[binding] = tensor
+            self.tensors[tensor_name] = tensor
         if not self.enable_cuda_graph or self.shared_device_memory == None:
             self.shared_device_memory = torch.empty(
                 self.engine.device_memory_size, dtype=torch.uint8, device=device
@@ -440,7 +356,7 @@ class Engine:
             if name in self.tensors:
                 self.tensors[name].copy_(buf)
             elif name in self.binding_set:
-                dtype = trt.nptype(self.engine.get_binding_dtype(name))
+                dtype = trt.nptype(self.engine.get_tensor_dtype(name))
                 self.tensors[name] = buf.to(dtype=numpy_to_torch_dtype_dict[dtype])
 
         for name, tensor in self.tensors.items():
@@ -479,7 +395,7 @@ class Engine:
     def set_static_dict_input(self, feed_dict):
         nvtx.range_push("set_tensors")
         for name, tensor in feed_dict.items():
-            dtype = trt.nptype(self.engine.get_binding_dtype(name))
+            dtype = trt.nptype(self.engine.get_tensor_dtype(name))
             feed_dict[name] = tensor.to(dtype=numpy_to_torch_dtype_dict[dtype])
             self.context.set_tensor_address(name, feed_dict[name].data_ptr())
         nvtx.range_pop()
@@ -487,8 +403,8 @@ class Engine:
     def __str__(self):
         out = ""
         for opt_profile in range(self.engine.num_optimization_profiles):
-            for binding_idx in range(self.engine.num_bindings):
-                name = self.engine.get_binding_name(binding_idx)
-                shape = self.engine.get_profile_shape(opt_profile, name)
+            for binding_idx in range(self.engine.num_io_tensors):
+                name = self.engine.get_tensor_name(binding_idx)
+                shape = self.engine.get_tensor_profile_shape(opt_profile, name)
                 out += f"\t{name} = {shape}\n"
         return out

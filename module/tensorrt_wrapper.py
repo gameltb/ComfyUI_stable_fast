@@ -155,8 +155,6 @@ class CallableTensorRTEngineWrapper:
                         [input_profile_info],
                         self.tensorrt_context.dtype,
                     )
-                    self.onnx_cache.seek(0)
-                    engine.refit_simple(self.onnx_cache, reset_zero=True)
                     engine.save_engine()
 
                 self.engine = engine
