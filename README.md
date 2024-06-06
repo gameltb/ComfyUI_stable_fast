@@ -2,6 +2,11 @@
 
 Experimental usage of [stable-fast](https://github.com/chengzeyi/stable-fast) and TensorRT.
 
+> [!NOTE]
+>
+> Official TensorRT node  https://github.com/comfyanonymous/ComfyUI_TensorRT
+> The project is no longer active because stable-fast is no longer active and it is difficult for third-party nodes to implement a flexible TensorRT for ComfyUI.
+
 [Speed Test](#speed-test)
 
 # Installation
