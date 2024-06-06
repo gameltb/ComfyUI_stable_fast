@@ -166,6 +166,12 @@ class Engine:
     def refit_simple(self, onnx_bytes):
         print(f"Refitting TensorRT engine with {onnx_bytes} weights")
 
+        if self.engine.streamable_weights_size > 0:
+            self.engine.weight_streaming_budget = (
+                self.engine.streamable_weights_size - 1
+            )
+            self.activate(True)
+
         refitter = trt.Refitter(self.engine, TRT_LOGGER)
         parser_refitter = trt.OnnxParserRefitter(refitter, TRT_LOGGER)
         result = parser_refitter.refit_from_bytes(onnx_bytes.getvalue())
@@ -179,11 +185,12 @@ class Engine:
         dtype,
         input_profile=None,
         enable_refit=False,
-        enable_preview=False,
+        enable_weight_streaming=False,
         enable_all_tactics=False,
         timing_cache=None,
         update_output_names=None,
     ):
+        # enable_weight_streaming = True
         print(f"Building TensorRT engine for : {self.engine_path}")
         config_kwargs = {}
         if not enable_all_tactics:
@@ -191,11 +198,19 @@ class Engine:
 
         if type(onnx_path) == bytes:
             network = network_from_onnx_bytes(
-                onnx_path, flags=[trt.OnnxParserFlag.NATIVE_INSTANCENORM]
+                onnx_path,
+                flags=[
+                    trt.OnnxParserFlag.NATIVE_INSTANCENORM,
+                ],
+                strongly_typed=enable_weight_streaming,
             )
         else:
             network = network_from_onnx_path(
-                onnx_path, flags=[trt.OnnxParserFlag.NATIVE_INSTANCENORM]
+                onnx_path,
+                flags=[
+                    trt.OnnxParserFlag.NATIVE_INSTANCENORM,
+                ],
+                strongly_typed=enable_weight_streaming,
             )
         if update_output_names:
             print(f"Updating network outputs to {update_output_names}")
@@ -220,15 +235,18 @@ class Engine:
         config = builder.create_builder_config()
         config.progress_monitor = TQDMProgressMonitor()
 
-        if dtype == torch.float16:
-            config.set_flag(trt.BuilderFlag.FP16)
-        elif dtype == torch.bfloat16:
-            config.set_flag(trt.BuilderFlag.BF16)
+        if not enable_weight_streaming:
+            if dtype == torch.float16:
+                config.set_flag(trt.BuilderFlag.FP16)
+            elif dtype == torch.bfloat16:
+                config.set_flag(trt.BuilderFlag.BF16)
 
         if enable_refit:
             config.set_flag(trt.BuilderFlag.STRIP_PLAN)
-            config.set_flag(trt.BuilderFlag.REFIT)
+            config.set_flag(trt.BuilderFlag.REFIT_IDENTICAL)
 
+        if enable_weight_streaming:
+            config.set_flag(trt.BuilderFlag.WEIGHT_STREAMING)
         # config.set_preview_feature(
         #     trt.PreviewFeature.DISABLE_EXTERNAL_TACTIC_SOURCES_FOR_CORE_0805, False
         # )
@@ -308,11 +326,12 @@ class Engine:
         self.cuda_graph_stream = None
 
     def activate(self, reuse_device_memory=None):
-        if reuse_device_memory:
-            self.context = self.engine.create_execution_context_without_device_memory()
-        #    self.context.device_memory = reuse_device_memory
-        else:
-            self.context = self.engine.create_execution_context()
+        if self.context is None:
+            if reuse_device_memory:
+                self.context = self.engine.create_execution_context_without_device_memory()
+            #    self.context.device_memory = reuse_device_memory
+            else:
+                self.context = self.engine.create_execution_context()
 
     def allocate_buffers(
         self, shape_dict=None, device="cuda", allocate_input_buffers=True

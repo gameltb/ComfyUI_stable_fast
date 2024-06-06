@@ -30,7 +30,7 @@ The following needs to be installed when you use TensorRT.
 
 ```bash
 pip install onnx zstandard
-pip install --pre --upgrade --extra-index-url https://pypi.nvidia.com tensorrt==10.0.0b6
+pip install --pre --upgrade --extra-index-url https://pypi.nvidia.com tensorrt==10.0.1
 pip install onnx-graphsurgeon polygraphy --extra-index-url https://pypi.ngc.nvidia.com
 ```
 
