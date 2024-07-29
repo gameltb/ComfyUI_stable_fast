@@ -17,17 +17,13 @@
 #
 import copy
 from collections import OrderedDict
-from enum import Enum, auto
-from logging import error, warning
+from logging import warning
 
 import numpy as np
-import onnx
-import onnx_graphsurgeon as gs
 import tensorrt as trt
 import torch
 import zstandard
 from polygraphy import util
-from polygraphy.backend.common import bytes_from_path
 from polygraphy.backend.trt import (
     ModifyNetworkOutputs,
     Profile,
@@ -36,10 +32,8 @@ from polygraphy.backend.trt import (
     engine_from_network,
     network_from_onnx_bytes,
     network_from_onnx_path,
-    save_engine,
 )
 from polygraphy.logger import G_LOGGER
-from safetensors.numpy import load_file, save_file
 from torch.cuda import nvtx
 from tqdm import tqdm
 
@@ -163,8 +157,8 @@ class Engine:
         del self.buffers
         del self.tensors
 
-    def refit_simple(self, onnx_bytes):
-        print(f"Refitting TensorRT engine with {onnx_bytes} weights")
+    def refit_simple(self, onnx_model):
+        print(f"Refitting TensorRT engine with {onnx_model} weights")
 
         if self.engine.streamable_weights_size > 0:
             self.engine.weight_streaming_budget = (
@@ -174,14 +168,79 @@ class Engine:
 
         refitter = trt.Refitter(self.engine, TRT_LOGGER)
         parser_refitter = trt.OnnxParserRefitter(refitter, TRT_LOGGER)
-        result = parser_refitter.refit_from_bytes(onnx_bytes.getvalue())
+        if type(onnx_model) is bytes:
+            result = parser_refitter.refit_from_bytes(onnx_model)
+        else:
+            result = parser_refitter.refit_from_file(onnx_model)
 
         if not result or not refitter.refit_cuda_engine():
             raise Exception("Failed to refit!")
 
+    def refit_from_dict(
+        self,
+        refit_weights: dict[str, torch.Tensor],
+        constant_refit_weights: dict[str, torch.Tensor],
+    ):
+        if self.engine.streamable_weights_size > 0:
+            self.engine.weight_streaming_budget = (
+                self.engine.streamable_weights_size - 1
+            )
+            self.activate(True)
+
+        # Initialize refitter
+        refitter = trt.Refitter(self.engine, TRT_LOGGER)
+
+        refitted_weights = set()
+        print(f"[I] Total refittable weights {len(refitter.get_all_weights())}.")
+
+        # iterate through all tensorrt refittable weights
+        for trt_weight_name in refitter.get_all_weights():
+            # get weight from state dict
+            if trt_weight_name in refit_weights:
+                refit_weight = refit_weights[trt_weight_name]
+            elif trt_weight_name in constant_refit_weights:
+                refit_weight = constant_refit_weights[trt_weight_name]
+                # print(refit_weight)
+            else:
+                continue
+
+            trt_datatype = refitter.get_weights_prototype(trt_weight_name).dtype
+            if trt_datatype == trt.DataType.FLOAT:
+                refit_weight = refit_weight.float()
+            elif trt_datatype == trt.DataType.HALF:
+                refit_weight = refit_weight.half()
+            else:
+                print("unhandled", trt_datatype)
+                continue
+
+            # trt.Weight and trt.TensorLocation
+            trt_wt_tensor = trt.Weights(
+                trt_datatype,
+                refit_weight.data_ptr(),
+                torch.numel(refit_weight),
+            )
+            trt_wt_location = (
+                trt.TensorLocation.DEVICE
+                if refit_weight.is_cuda
+                else trt.TensorLocation.HOST
+            )
+
+            self.buffers[trt_weight_name] = refit_weight
+
+            # apply refit
+            refitter.set_named_weights(trt_weight_name, trt_wt_tensor, trt_wt_location)
+            refitted_weights.add(trt_weight_name)
+
+        # assert set(refitted_weights) == set(refit_weights.keys())
+        if not refitter.refit_cuda_engine():
+            print("Error: failed to refit new weights.")
+            exit(0)
+
+        print(f"[I] Total refitted weights {len(refitted_weights)}.")
+
     def build(
         self,
-        onnx_path,
+        onnx_model,
         dtype,
         input_profile=None,
         enable_refit=False,
@@ -196,9 +255,9 @@ class Engine:
         if not enable_all_tactics:
             config_kwargs["tactic_sources"] = []
 
-        if type(onnx_path) == bytes:
+        if type(onnx_model) is bytes:
             network = network_from_onnx_bytes(
-                onnx_path,
+                onnx_model,
                 flags=[
                     trt.OnnxParserFlag.NATIVE_INSTANCENORM,
                 ],
@@ -206,7 +265,7 @@ class Engine:
             )
         else:
             network = network_from_onnx_path(
-                onnx_path,
+                onnx_model,
                 flags=[
                     trt.OnnxParserFlag.NATIVE_INSTANCENORM,
                 ],
@@ -292,8 +351,8 @@ class Engine:
             zwfp.write(bytes_from_engine(self.engine))
 
     def load(self):
-        if self.refited_engine_byte != None:
-            print(f"Loading TensorRT engine from byte cache.")
+        if self.refited_engine_byte is not None:
+            print("Loading TensorRT engine from byte cache.")
             self.engine = engine_from_bytes(self.refited_engine_byte)
             self.refited_engine_byte = None
         else:
@@ -314,10 +373,9 @@ class Engine:
         self.engine = None
 
     def offload(self):
-        if self.refited_engine_byte == None:
+        if self.refited_engine_byte is None:
             self.refited_engine_byte = bytes_from_engine(self.engine)
         self.unload()
-        self.buffers = OrderedDict()
         self.tensors = OrderedDict()
         self.shared_device_memory = None
 
@@ -328,7 +386,9 @@ class Engine:
     def activate(self, reuse_device_memory=None):
         if self.context is None:
             if reuse_device_memory:
-                self.context = self.engine.create_execution_context_without_device_memory()
+                self.context = (
+                    self.engine.create_execution_context_without_device_memory()
+                )
             #    self.context.device_memory = reuse_device_memory
             else:
                 self.context = self.engine.create_execution_context()

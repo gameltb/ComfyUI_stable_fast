@@ -1,5 +1,5 @@
-import torch
 import comfy.utils
+import torch
 
 
 class PatchModelAddDownscale_input_block_patch(torch.nn.Module):

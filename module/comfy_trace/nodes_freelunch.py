@@ -1,7 +1,8 @@
 # code originally taken from: https://github.com/ChenyangSi/FreeU (under MIT License)
 
-import torch
 import copy
+
+import torch
 
 
 def Fourier_filter(x, threshold: int, scale: float):

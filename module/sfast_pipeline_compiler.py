@@ -72,7 +72,10 @@ class LazyTraceModule:
                     traced_module_cache.patch_id != self.patch_id
                     or traced_module_cache.device == "meta"
                 ):
-                    with module_factory.converted_module_context() as (m_model, m_kwargs):
+                    with module_factory.converted_module_context() as (
+                        m_model,
+                        m_kwargs,
+                    ):
                         next(
                             next(traced_module_cache.module.children()).children()
                         ).load_state_dict(

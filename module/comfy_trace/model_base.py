@@ -1,6 +1,6 @@
 import contextlib
+
 import torch
-import copy
 
 from ..comfy_trace_utilities import ModuleFactory, hash_arg
 from .nodes_freelunch import FreeU, FreeU_V2
@@ -110,7 +110,7 @@ class BaseModelApplyModelModuleFactory(ModuleFactory):
             if k == "transformer_options":
                 nv = {}
                 for tk, tv in v.items():
-                    if not tk in ("patches"):  # ,"cond_or_uncond"
+                    if tk not in ("patches",):  # ,"cond_or_uncond"
                         nv[tk] = tv
                 v = nv
             key_kwargs[k] = v

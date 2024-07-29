@@ -26,11 +26,11 @@ class CallableTensorRTEngineWrapperDynamicShapeBaseModelApplyModel(
         args = []
         for arg_name in self.args_name:
             arg = kwargs.get(arg_name, None)
-            if arg != None or not isinstance(
+            if arg is not None or not isinstance(
                 module, (torch.jit.ScriptFunction, torch.jit.ScriptModule)
             ):
                 args.append(arg)
-                if arg != None:
+                if arg is not None:
                     if arg_name == "control":
                         control_params = arg
                         for key in control_params:

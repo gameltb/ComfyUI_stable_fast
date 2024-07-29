@@ -1,15 +1,13 @@
 import copy
 import enum
 
-import torch
-
 import comfy.model_management
 import comfy.model_patcher
 import nodes
+import torch
 
 from .module.comfy_trace.model_base import BaseModelApplyModelModuleFactory
 from .module.comfy_trace.sd import VAEDecodeModule
-from .module.comfy_trace_utilities import TracerWithCache
 from .module.controlnet_tensorrt import (
     CallableTensorRTEngineWrapperDynamicShapeControlNet,
 )
@@ -172,14 +170,14 @@ class UnetTensorRTPatch(BlockTensorRTPatch):
         if hasattr(model_function.__self__, "hf_device_map"):
             return model_function(input_x, timestep_, **c)
 
-        if self.tensorrt_module == None:
+        if self.tensorrt_module is None:
             self.tensorrt_module = (
                 CallableTensorRTEngineWrapperDynamicShapeBaseModelApplyModel(
                     self.tensorrt_context, ""
                 )
             )
             control = c.get("control", None)
-            if control == None:
+            if control is None:
                 self.warmup(model_function, params)
 
         self.tensorrt_context.cuda_stream = torch.cuda.current_stream()

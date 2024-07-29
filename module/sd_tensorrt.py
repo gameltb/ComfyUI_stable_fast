@@ -6,7 +6,7 @@ class CallableTensorRTEngineWrapperDynamicShapeVAEDecode(CallableTensorRTEngineW
         "samples",
     ]
 
-    def gen_onnx_args(self, kwargs,module=None):
+    def gen_onnx_args(self, kwargs, module=None):
         args_name = []
         args = []
         for arg_name in self.args_name:

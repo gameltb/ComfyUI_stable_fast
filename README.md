@@ -4,10 +4,14 @@ Experimental usage of [stable-fast](https://github.com/chengzeyi/stable-fast) an
 
 > [!NOTE]
 >
-> Official TensorRT node  https://github.com/comfyanonymous/ComfyUI_TensorRT  
-> The project is no longer active because stable-fast is no longer active and it is difficult for third-party nodes to implement a flexible TensorRT for ComfyUI.
+> Official TensorRT node https://github.com/comfyanonymous/ComfyUI_TensorRT  
+> This repo is still experimental, just want to try TensorRT that doesn't need to be compiled repeatedly.
 
 [Speed Test](#speed-test)
+
+# Update
+
+- 2024-07-29 : significantly improved performance of starting and switching models when there is an engine cache on PyTorch 2.4.0.
 
 # Installation
 
@@ -34,8 +38,8 @@ You'll need to follow the guide below to enable stable fast node.
 The following needs to be installed when you use TensorRT.
 
 ```bash
-pip install onnx zstandard
-pip install --pre --upgrade --extra-index-url https://pypi.nvidia.com tensorrt==10.0.1
+pip install onnx zstandard onnxscript --upgrade
+pip install --pre --upgrade --extra-index-url https://pypi.nvidia.com tensorrt==10.2.0
 pip install onnx-graphsurgeon polygraphy --extra-index-url https://pypi.ngc.nvidia.com
 ```
 

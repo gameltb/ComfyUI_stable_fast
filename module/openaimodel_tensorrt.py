@@ -1,18 +1,17 @@
-import yaml
 from dataclasses import dataclass, field
-from typing import Any, Dict
-
-import torch as th
+from typing import Dict
 
 import comfy.ldm.modules.diffusionmodules.openaimodel
 import comfy.model_management
 import comfy.model_patcher
-from .tensorrt_wrapper import TensorRTEngineContext, CallableTensorRTEngineWrapper
+import torch as th
+import yaml
+
 from .comfy_trace.openaimodel import (
     ForwardTimestepEmbedModule,
     origin_forward_timestep_embed,
 )
-
+from .tensorrt_wrapper import CallableTensorRTEngineWrapper, TensorRTEngineContext
 
 TENSORRT_CONTEXT_KEY = "tensorrt_context"
 
@@ -45,12 +44,12 @@ class CallableTensorRTEngineWrapperDynamicShapeForwardTimestep(
         "image_only_indicator",
     ]
 
-    def gen_onnx_args(self, kwargs,module=None):
+    def gen_onnx_args(self, kwargs, module=None):
         args_name = []
         args = []
         for arg_name in self.args_name:
             args.append(kwargs.get(arg_name, None))
-            if args[-1] != None:
+            if args[-1] is not None:
                 args_name.append(arg_name)
         dynamic_axes = {
             "x": {0: "B", 2: "H", 3: "W"},
@@ -59,7 +58,7 @@ class CallableTensorRTEngineWrapperDynamicShapeForwardTimestep(
             "output_shape_tensor": {0: "B", 2: "OH", 3: "OW"},
         }
         for k in list(dynamic_axes.keys()):
-            if not k in args_name:
+            if k not in args_name:
                 dynamic_axes.pop(k)
         return args, args_name, dynamic_axes
 
@@ -68,7 +67,7 @@ class CallableTensorRTEngineWrapperDynamicShapeForwardTimestep(
         feed_dict = {}
         for arg_name in self.args_name:
             arg = kwargs.get(arg_name, None)
-            if arg != None:
+            if arg is not None:
                 feed_dict[arg_name] = arg
                 input_shape_info[arg_name] = tuple(arg.shape)
 
@@ -85,7 +84,7 @@ class CallableTensorRTEngineWrapperDynamicShapeForwardTimestep(
         for arg_name, shape_info in input_shape_info.items():
             min_shape_config = min_input_profile_info.get(arg_name, None)
             min_shape_info = list(shape_info)
-            if min_shape_config != None:
+            if min_shape_config is not None:
                 for k, v in min_shape_config.items():
                     min_shape_info[k] = v
             input_profile_info[arg_name] = [
@@ -115,11 +114,11 @@ def hook_forward_timestep_embed(
     if tensorrt_block_context != None:
         block_key = str(transformer_options["block"])
         block = tensorrt_block_context.block_cache.get(block_key, None)
-        if block == None:
-            tensorrt_block_context.block_cache[
-                block_key
-            ] = CallableTensorRTEngineWrapperDynamicShapeForwardTimestep(
-                tensorrt_block_context.tensorrt_context, block_key
+        if block is None:
+            tensorrt_block_context.block_cache[block_key] = (
+                CallableTensorRTEngineWrapperDynamicShapeForwardTimestep(
+                    tensorrt_block_context.tensorrt_context, block_key
+                )
             )
         return tensorrt_block_context.block_cache[block_key](
             module,
@@ -127,7 +126,7 @@ def hook_forward_timestep_embed(
             emb=emb,
             context=context,
             output_shape_tensor=output_shape
-            if output_shape == None
+            if output_shape is None
             else th.empty((output_shape), device=x.device, dtype=x.dtype),
             time_context=time_context,
             image_only_indicator=image_only_indicator,
