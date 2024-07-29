@@ -35,7 +35,7 @@ class ForwardTimestepEmbedModule(th.nn.Module):
             context=context,
             transformer_options=self.transformer_options,
             output_shape=output_shape_tensor
-            if output_shape_tensor == None
+            if output_shape_tensor is None
             else output_shape_tensor.shape,
             time_context=time_context,
             num_video_frames=self.num_video_frames,

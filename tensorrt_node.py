@@ -6,16 +6,16 @@ import comfy.model_patcher
 import nodes
 import torch
 
-from .module.comfy_trace.model_base import BaseModelApplyModelModuleFactory
+from .module.comfy_trace.model_base import (
+    UNetModelModuleFactory,
+)
 from .module.comfy_trace.sd import VAEDecodeModule
 from .module.controlnet_tensorrt import (
     CallableTensorRTEngineWrapperDynamicShapeControlNet,
 )
-from .module.model_base_tensorrt import (
-    CallableTensorRTEngineWrapperDynamicShapeBaseModelApplyModel,
-)
 from .module.openaimodel_tensorrt import (
     TENSORRT_CONTEXT_KEY,
+    CallableTensorRTEngineWrapperDynamicShapeUNetModelForward,
     TensorRTEngineBlockContext,
     do_hook_forward_timestep_embed,
     undo_hook_forward_timestep_embed,
@@ -24,64 +24,62 @@ from .module.sd_tensorrt import CallableTensorRTEngineWrapperDynamicShapeVAEDeco
 from .module.tensorrt_wrapper import TensorRTEngineConfig, TensorRTEngineContext
 
 
-class BlockTensorRTPatch:
-    tensorrt_context_cache = {}
-
-    def __init__(self, model, config):
-        self.model = model
+class BlockTensorRTPatch(torch.nn.Module):
+    def __init__(self, config, model_config):
+        super().__init__()
+        self.model: torch.nn.Module = None
+        self.model_config = model_config
         self.config = config
         self.model_device = torch.device("cpu")
+        self.tensorrt_module = None
 
     def __deepcopy__(self, memo=None):
         return self
 
-    def warmup(self, model_function, params):
-        input_x = params.get("input")
-        timestep_ = params.get("timestep")
-        c = params.get("c")
+    @property
+    def dtype(self):
+        return self.model.dtype
 
+    def warmup(
+        self,
+        x,
+        timesteps,
+        context,
+        y,
+        control,
+        transformer_options,
+        **kwargs,
+    ):
         warmup_input_x = torch.zeros(
             (
                 self.config.keep_batch_size * 2,
-                input_x.shape[1],
+                x.shape[1],
                 int(self.config.keep_height / 8),
                 int(self.config.keep_width / 8),
             ),
-            device=input_x.device,
-            dtype=input_x.dtype,
+            device=x.device,
+            dtype=x.dtype,
         )
-        warmup_timestep_ = torch.ones(
+        warmup_x = warmup_input_x
+        warmup_timesteps = torch.ones(
             (self.config.keep_batch_size * 2,),
-            device=timestep_.device,
-            dtype=timestep_.dtype,
+            device=timesteps.device,
+            dtype=timesteps.dtype,
         )
-        warmup_c = {"transformer_options": {}}
-        c_crossattn = c.get("c_crossattn", None)
-        if c_crossattn != None:
-            warmup_c["c_crossattn"] = torch.zeros(
+        warmup_context = None
+        if context is not None:
+            warmup_context = torch.zeros(
                 (
                     self.config.keep_batch_size * 2,
                     self.config.keep_embedding_block * 77,
-                    c_crossattn.shape[2],
+                    context.shape[2],
                 ),
-                device=c_crossattn.device,
-                dtype=c_crossattn.dtype,
+                device=context.device,
+                dtype=context.dtype,
             )
-        c_concat = c.get("c_concat", None)
-        if c_concat != None:
-            warmup_c["c_concat"] = torch.zeros(
-                (
-                    self.config.keep_batch_size * 2,
-                    c_concat.shape[1],
-                    int(self.config.keep_height / 8),
-                    int(self.config.keep_width / 8),
-                ),
-                device=c_concat.device,
-                dtype=c_concat.dtype,
-            )
-        y = c.get("y", None)
-        if y != None:
-            warmup_c["y"] = torch.zeros(
+        warmup_y = None
+        if y is not None:
+            warmup_y = torch.zeros(
                 (
                     self.config.keep_batch_size * 2,
                     y.shape[1],
@@ -91,72 +89,134 @@ class BlockTensorRTPatch:
             )
 
         self(
-            model_function,
-            {"input": warmup_input_x, "timestep": warmup_timestep_, "c": warmup_c},
+            warmup_x,
+            warmup_timesteps,
+            warmup_context,
+            warmup_y,
+            None,
+            {},
+            **kwargs,
         )
 
-    def __call__(self, model_function, params):
-        input_x = params.get("input")
-        timestep_ = params.get("timestep")
-        c = params.get("c")
-
-        # disable with accelerate for now
-        if hasattr(model_function.__self__, "hf_device_map"):
-            return model_function(input_x, timestep_, **c)
-
-        if not id(self) in self.tensorrt_context_cache:
-            self.tensorrt_context_cache[id(self)] = TensorRTEngineBlockContext()
-            self.tensorrt_context_cache[id(self)].tensorrt_context.keep_models.append(
-                self.model
+    def __call__(
+        self,
+        x,
+        timesteps=None,
+        context=None,
+        y=None,
+        control=None,
+        transformer_options={},
+        **kwargs,
+    ):
+        if self.tensorrt_module is None:
+            self.tensorrt_module = TensorRTEngineBlockContext()
+            self.tensorrt_module.tensorrt_context.keep_models.append(self.model)
+            self.warmup(
+                x,
+                timesteps,
+                context,
+                y,
+                control,
+                transformer_options,
+                **kwargs,
             )
-            self.warmup(model_function, params)
 
-        self.tensorrt_context_cache[
-            id(self)
-        ].tensorrt_context.model_type = (
-            model_function.__self__.model_config.__class__.__name__
+        self.tensorrt_module.tensorrt_context.model_type = (
+            self.model_config.__class__.__name__
         )
-        self.tensorrt_context_cache[
-            id(self)
-        ].tensorrt_context.unet_config = (
-            model_function.__self__.model_config.unet_config
+        self.tensorrt_module.tensorrt_context.unet_config = (
+            self.model_config.unet_config
         )
-        self.tensorrt_context_cache[
-            id(self)
-        ].tensorrt_context.cuda_stream = torch.cuda.current_stream()
-        self.tensorrt_context_cache[
-            id(self)
-        ].tensorrt_context.cuda_device = input_x.device
-        c["transformer_options"][TENSORRT_CONTEXT_KEY] = self.tensorrt_context_cache[
-            id(self)
-        ]
+        self.tensorrt_module.tensorrt_context.cuda_stream = torch.cuda.current_stream()
+        self.tensorrt_module.tensorrt_context.cuda_device = x.device
+        transformer_options[TENSORRT_CONTEXT_KEY] = self.tensorrt_module
 
         do_hook_forward_timestep_embed()
         try:
-            out = model_function(input_x, timestep_, **c)
+            out = self.model(
+                x,
+                timesteps,
+                context,
+                y,
+                control,
+                transformer_options,
+                **kwargs,
+            )
         finally:
             undo_hook_forward_timestep_embed()
-            c["transformer_options"].pop(TENSORRT_CONTEXT_KEY)
+            transformer_options.pop(TENSORRT_CONTEXT_KEY)
 
         return out
 
     def to(self, device):
-        if type(device) == torch.device:
+        if type(device) is torch.device:
             self.model_device = device
         return self
 
-    def __del__(self):
-        if id(self) in self.tensorrt_context_cache:
-            self.tensorrt_context_cache.pop(id(self))
-
 
 class UnetTensorRTPatch(BlockTensorRTPatch):
-    def __init__(self, model, config):
-        self.model = model
-        self.config = config
-        self.model_device = torch.device("cpu")
-        self.tensorrt_module = None
+    def __init__(self, config, model_config):
+        super().__init__(config, model_config)
         self.tensorrt_context = TensorRTEngineContext()
+
+    def __call__(
+        self,
+        x,
+        timesteps=None,
+        context=None,
+        y=None,
+        control=None,
+        transformer_options={},
+        **kwargs,
+    ):
+        if self.tensorrt_module is None:
+            devices = set((v.device for v in self.model.state_dict().values()))
+            if torch.device("cpu") in devices:
+                self.tensorrt_context.enable_weight_streaming = True
+            self.tensorrt_module = (
+                CallableTensorRTEngineWrapperDynamicShapeUNetModelForward(
+                    self.tensorrt_context, ""
+                )
+            )
+            if control is None:
+                self.warmup(
+                    x,
+                    timesteps,
+                    context,
+                    y,
+                    control,
+                    transformer_options,
+                    **kwargs,
+                )
+
+        self.tensorrt_context.model_type = self.model_config.__class__.__name__
+        self.tensorrt_context.unet_config = self.model_config.unet_config
+
+        self.tensorrt_context.cuda_stream = torch.cuda.current_stream()
+        self.tensorrt_context.cuda_device = x.device
+        # self.tensorrt_context.dtype = input_x.dtype
+
+        module_factory = UNetModelModuleFactory(
+            self.model,
+            self.model_config,
+            x=x,
+            timesteps=timesteps,
+            context=context,
+            y=y,
+            control=control,
+            transformer_options=transformer_options,
+            **kwargs,
+        )
+
+        with module_factory.converted_module_context() as (m_model, m_kwargs):
+            out = self.tensorrt_module(m_model, **m_kwargs)
+
+        return out
+
+
+class ModelUnetFunctionWrapper:
+    def __init__(self, patch):
+        self.patch = patch
 
     def __deepcopy__(self, memo=None):
         return self
@@ -166,30 +226,13 @@ class UnetTensorRTPatch(BlockTensorRTPatch):
         timestep_ = params.get("timestep")
         c = params.get("c")
 
-        # disable with accelerate for now
-        if hasattr(model_function.__self__, "hf_device_map"):
-            return model_function(input_x, timestep_, **c)
-
-        if self.tensorrt_module is None:
-            self.tensorrt_module = (
-                CallableTensorRTEngineWrapperDynamicShapeBaseModelApplyModel(
-                    self.tensorrt_context, ""
-                )
-            )
-            control = c.get("control", None)
-            if control is None:
-                self.warmup(model_function, params)
-
-        self.tensorrt_context.cuda_stream = torch.cuda.current_stream()
-        self.tensorrt_context.cuda_device = input_x.device
-        # self.tensorrt_context.dtype = input_x.dtype
-
-        module_factory = BaseModelApplyModelModuleFactory(
-            model_function, {"input_x": input_x, "timestep": timestep_, **c}
-        )
-
-        with module_factory.converted_module_context() as (m_model, m_kwargs):
-            out = self.tensorrt_module(m_model, **m_kwargs)
+        origin_diffusion_model = model_function.__self__.diffusion_model
+        self.patch.model = origin_diffusion_model
+        model_function.__self__.diffusion_model = self.patch
+        try:
+            out = model_function(input_x, timestep_, **c)
+        finally:
+            model_function.__self__.diffusion_model = origin_diffusion_model
 
         return out
 
@@ -315,10 +358,10 @@ class ApplyTensorRTUnet:
         )
         patch_type_clss = PatchType[patch_type].value
         model_tensor_rt = model.clone()
-        patch = patch_type_clss[0](model, config)
+        patch = patch_type_clss[0](config, model.model.model_config)
         model_tensor_rt = patch_type_clss[1].cast_from(model_tensor_rt)
         patch.model = model_tensor_rt
-        model_tensor_rt.set_model_unet_function_wrapper(patch)
+        model_tensor_rt.set_model_unet_function_wrapper(ModelUnetFunctionWrapper(patch))
         if hook_memory_require:
             model_tensor_rt.add_object_patch("memory_required", hook_memory_required)
         return (model_tensor_rt,)
@@ -347,7 +390,7 @@ class VAEDecodeTensorRTPatch:
         self(warmup_samples)
 
     def __call__(self, samples_in):
-        if self.tensorrt_module == None:
+        if self.tensorrt_module is None:
             self.tensorrt_module = CallableTensorRTEngineWrapperDynamicShapeVAEDecode(
                 self.tensorrt_context, ""
             )

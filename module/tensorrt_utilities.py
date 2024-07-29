@@ -161,9 +161,7 @@ class Engine:
         print(f"Refitting TensorRT engine with {onnx_model} weights")
 
         if self.engine.streamable_weights_size > 0:
-            self.engine.weight_streaming_budget = (
-                self.engine.streamable_weights_size - 1
-            )
+            self.engine.weight_streaming_budget_v2 = 0
             self.activate(True)
 
         refitter = trt.Refitter(self.engine, TRT_LOGGER)
@@ -182,10 +180,9 @@ class Engine:
         constant_refit_weights: dict[str, torch.Tensor],
     ):
         if self.engine.streamable_weights_size > 0:
-            self.engine.weight_streaming_budget = (
-                self.engine.streamable_weights_size - 1
-            )
+            self.engine.weight_streaming_budget_v2 = 0
             self.activate(True)
+            print(self.engine.weight_streaming_scratch_memory_size)
 
         # Initialize refitter
         refitter = trt.Refitter(self.engine, TRT_LOGGER)
@@ -249,7 +246,6 @@ class Engine:
         timing_cache=None,
         update_output_names=None,
     ):
-        # enable_weight_streaming = True
         print(f"Building TensorRT engine for : {self.engine_path}")
         config_kwargs = {}
         if not enable_all_tactics:
@@ -355,6 +351,7 @@ class Engine:
             print("Loading TensorRT engine from byte cache.")
             self.engine = engine_from_bytes(self.refited_engine_byte)
             self.refited_engine_byte = None
+            self.refit_from_dict(self.buffers, {})
         else:
             print(f"Loading TensorRT engine: {self.engine_path}")
             with zstandard.open(self.engine_path, "rb") as zrfp:
@@ -375,6 +372,8 @@ class Engine:
     def offload(self):
         if self.refited_engine_byte is None:
             self.refited_engine_byte = bytes_from_engine(self.engine)
+            for k in self.buffers:
+                self.buffers[k] = self.buffers[k].to("cpu")
         self.unload()
         self.tensors = OrderedDict()
         self.shared_device_memory = None
@@ -419,7 +418,7 @@ class Engine:
                 tuple(shape), dtype=numpy_to_torch_dtype_dict[dtype], device=device
             )
             self.tensors[tensor_name] = tensor
-        if not self.enable_cuda_graph or self.shared_device_memory == None:
+        if not self.enable_cuda_graph or self.shared_device_memory is None:
             self.shared_device_memory = torch.empty(
                 self.engine.device_memory_size, dtype=torch.uint8, device=device
             )

@@ -118,6 +118,7 @@ class CallableTensorRTEngineWrapper:
                 hash_arg(self.tensorrt_context.unet_config),
                 hash_arg(self.identification),
                 hash_arg(input_profile_info),
+                hash_arg(self.tensorrt_context.enable_weight_streaming),
             )
 
             if engine_cache_key in self.engine_cache_map:
@@ -153,7 +154,7 @@ class CallableTensorRTEngineWrapper:
                     )
                     try:
                         use_patched_export = False
-                        # only change is just make its export funtion return onnx params_dict 
+                        # only change is just make its export funtion return onnx params_dict
                         if torch.version.__version__ == "2.4.0":
                             from .patched_onnx_export.utils_2_4_0 import (
                                 export as patched_export,
@@ -221,6 +222,7 @@ class CallableTensorRTEngineWrapper:
                         self.onnx_cache,
                         [input_profile_info],
                         self.tensorrt_context.dtype,
+                        enable_weight_streaming=self.tensorrt_context.enable_weight_streaming,
                     )
                     engine.save_engine()
 
@@ -268,6 +270,7 @@ class CallableTensorRTEngineWrapper:
                     nvtx.range_pop()
                 except Exception as e:
                     self.engine = None
+                    gc.collect()
                     raise e
 
         if self.engine.engine is None:
@@ -293,6 +296,9 @@ class CallableTensorRTEngineWrapper:
 
 
 class TensorRTEngineComfyModelPatcherWrapper(comfy.model_patcher.ModelPatcher):
+    def patch_model_lowvram(self, device_to=None, *arg, **kwargs):
+        self.patch_model(device_to, patch_weights=False)
+
     def patch_model(self, device_to=None, *arg, **kwargs):
         if device_to is not None:
             if self.model.engine is None:
@@ -327,6 +333,7 @@ class TensorRTEngineContext:
     model_type: str = ""
     keep_models: List = field(default_factory=lambda: [])
     dtype: object = torch.float16
+    enable_weight_streaming: bool = False
 
 
 TIMING_CACHE_PATH = os.path.join(
@@ -363,7 +370,7 @@ def get_engine_with_cache(key):
     return None
 
 
-def gen_engine(key, onnx_model, input_profile, dtype):
+def gen_engine(key, onnx_model, input_profile, dtype, enable_weight_streaming=False):
     engine = Engine(get_engine_path(key))
     s = time.time()
     engine.build(
@@ -372,6 +379,7 @@ def gen_engine(key, onnx_model, input_profile, dtype):
         enable_refit=True,
         timing_cache=TIMING_CACHE_PATH,
         input_profile=input_profile,
+        enable_weight_streaming=enable_weight_streaming,
     )
     e = time.time()
     _logger.info(f"Time taken to build: {e-s}s")

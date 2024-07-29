@@ -16,6 +16,9 @@ def hash_arg(arg):
                 ((hash_arg(k), hash_arg(v)) for k, v in arg.items()), key=lambda x: x[0]
             )
         )
+    if isinstance(arg, torch.dtype):
+        return str(arg)
+
     return type(arg)
 
 
