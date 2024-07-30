@@ -365,7 +365,7 @@ class ApplyTensorRTUnet:
             "required": {
                 "model": ("MODEL",),
                 "enable_cuda_graph": ("BOOLEAN", {"default": True}),
-                "patch_type": ([e.name for e in PatchType], {"default": "UNET_BLOCK"}),
+                "patch_type": ([e.name for e in PatchType], {"default": "UNET"}),
                 "hook_memory_require": ("BOOLEAN", {"default": True}),
                 "keep_width": (
                     "INT",
