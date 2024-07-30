@@ -438,13 +438,15 @@ class Engine:
             self.shared_device_memory = torch.empty(
                 self.engine.device_memory_size_v2, dtype=torch.uint8, device=device
             )
-            self.context.device_memory = self.shared_device_memory.data_ptr()
+            self.context.set_device_memory(
+                self.shared_device_memory.data_ptr(), self.engine.device_memory_size_v2
+            )
         nvtx.range_pop()
 
     def release_buffers(self):
         self.tensors = OrderedDict()
 
-    def infer(self, feed_dict, stream):
+    def infer(self, feed_dict, stream: torch.cuda.Stream, stream_sync=False):
         nvtx.range_push("set_tensors")
         for name, buf in feed_dict.items():
             if name in self.tensors:
@@ -483,6 +485,9 @@ class Engine:
         if not self.enable_cuda_graph:
             del self.shared_device_memory
             self.shared_device_memory = None
+
+        if stream_sync:
+            stream.synchronize()
 
         return self.tensors
 

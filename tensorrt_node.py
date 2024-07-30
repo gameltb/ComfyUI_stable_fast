@@ -192,7 +192,11 @@ class UnetTensorRTPatch(BlockTensorRTPatch):
         self.tensorrt_context.model_type = self.model_config.__class__.__name__
         self.tensorrt_context.unet_config = self.model_config.unet_config
 
-        self.tensorrt_context.cuda_stream = torch.cuda.current_stream()
+        if self.tensorrt_context.cuda_stream is None:
+            # self.tensorrt_context.cuda_stream = torch.cuda.current_stream()
+            self.tensorrt_context.cuda_stream = torch.cuda.Stream(x.device)
+            self.tensorrt_context.infer_cuda_stream_sync = True
+
         self.tensorrt_context.cuda_device = x.device
         # self.tensorrt_context.dtype = input_x.dtype
 

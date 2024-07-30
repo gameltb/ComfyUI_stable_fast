@@ -141,9 +141,11 @@ class CallableTensorRTEngineWrapper:
                 )
                 self.onnx_refit_info = get_refit_info_cache(onnx_cache_key)
 
-                if (engine is None and self.onnx_cache is None) or (
-                    self.onnx_refit_info is None and self.onnx_cache is None
-                ):
+                if (
+                    (engine is None)
+                    or (self.onnx_refit_info is None)
+                    or (not self.tensorrt_context.enable_fast_refit)
+                ) and self.onnx_cache is None:
                     module.to(device=self.tensorrt_context.cuda_device)
                     self.onnx_cache_dir = tempfile.TemporaryDirectory(
                         suffix="onnx_cache_dir"
@@ -173,17 +175,19 @@ class CallableTensorRTEngineWrapper:
                                 dynamic_axes=dynamic_axes,
                                 # dynamo=True
                             )
-
-                            self.onnx_refit_info = gen_refit_info(onnx_cache_key)
-                            self.onnx_refit_info.tensor_gen_map = (
-                                make_module_onnx_tensor_gen_map_by_params_dict(
-                                    module, params_dict
+                            if self.tensorrt_context.enable_fast_refit:
+                                self.onnx_refit_info = gen_refit_info(onnx_cache_key)
+                                self.onnx_refit_info.tensor_gen_map = (
+                                    make_module_onnx_tensor_gen_map_by_params_dict(
+                                        module, params_dict
+                                    )
                                 )
-                            )
-                            self.onnx_refit_info.constant_params_dict = (
-                                make_constant_params_dict_by_onnx_model(self.onnx_cache)
-                            )
-                            self.onnx_refit_info.save()
+                                self.onnx_refit_info.constant_params_dict = (
+                                    make_constant_params_dict_by_onnx_model(
+                                        self.onnx_cache
+                                    )
+                                )
+                                self.onnx_refit_info.save()
                         else:
                             torch.onnx.export(
                                 module,
@@ -216,6 +220,7 @@ class CallableTensorRTEngineWrapper:
                         6 * 1024 * 1024 * 1024,
                         self.tensorrt_context.cuda_device,
                     )
+                    comfy.model_management.soft_empty_cache()
                     engine = gen_engine(
                         engine_cache_key,
                         self.onnx_cache,
@@ -231,7 +236,10 @@ class CallableTensorRTEngineWrapper:
                     if self.engine.engine is None:
                         self.engine.load()
                     nvtx.range_push("refit engine")
-                    if self.onnx_refit_info is not None:
+                    if (
+                        self.tensorrt_context.enable_fast_refit
+                        and self.onnx_refit_info is not None
+                    ):
                         _logger.info("using fast refit")
                         self.engine.refit_from_dict(
                             make_params_dict_by_module(
@@ -286,7 +294,11 @@ class CallableTensorRTEngineWrapper:
             device=self.tensorrt_context.cuda_device,
             allocate_input_buffers=False,
         )
-        output = self.engine.infer(feed_dict, self.tensorrt_context.cuda_stream)
+        output = self.engine.infer(
+            feed_dict,
+            self.tensorrt_context.cuda_stream,
+            self.tensorrt_context.infer_cuda_stream_sync,
+        )
         output = self.gen_tensorrt_outputs(output)
         self.engine.release_buffers()
 
@@ -332,6 +344,8 @@ class TensorRTEngineContext:
     keep_models: List = field(default_factory=lambda: [])
     dtype: object = torch.float16
     enable_weight_streaming: bool = False
+    enable_fast_refit: bool = True
+    infer_cuda_stream_sync: bool = False
 
 
 TIMING_CACHE_PATH = os.path.join(

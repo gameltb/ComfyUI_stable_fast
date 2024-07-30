@@ -92,12 +92,12 @@ When you use ControlNet, different control image sizes will cause the engine to 
 |                  | Stable Fast           | TensorRT(UNET) | TensorRT(UNET_BLOCK) |
 | ---------------- | --------------------- | -------------- | -------------------- |
 | SD1.5            | &check;               | &check;        | &check;              |
-| SDXL             | untested(Should work) | WIP            | untested             |
-| SSD-1B           | &check;               | WIP            | &check;              |
+| SDXL             | untested(Should work) | &check;        | untested             |
+| SSD-1B           | &check;               | &check;        | &check;              |
 | Lora             | &check;               | &check;        | &check;              |
 | ControlNet Unet  | &check;               | &check;        | &check;              |
-| VAE decode       | WIP                   | &check;        | &check;              |
-| ControlNet Model | WIP                   | WIP            | WIP                  |
+| VAE decode       | WIP                   | &check;        | -                    |
+| ControlNet Model | WIP                   | WIP            | -                    |
 
 ## Nodes Tested
 
