@@ -151,6 +151,8 @@ class Engine:
 
         self.refited_engine_byte = None
 
+        self.last_device_memory_size = 0
+
     def __del__(self):
         del self.engine
         del self.context
@@ -161,7 +163,6 @@ class Engine:
         print(f"Refitting TensorRT engine with {onnx_model} weights")
 
         if self.engine.streamable_weights_size > 0:
-            self.engine.weight_streaming_budget_v2 = 0
             self.activate(True)
 
         refitter = trt.Refitter(self.engine, TRT_LOGGER)
@@ -180,9 +181,7 @@ class Engine:
         constant_refit_weights: dict[str, torch.Tensor],
     ):
         if self.engine.streamable_weights_size > 0:
-            self.engine.weight_streaming_budget_v2 = 0
             self.activate(True)
-            print(self.engine.weight_streaming_scratch_memory_size)
 
         # Initialize refitter
         refitter = trt.Refitter(self.engine, TRT_LOGGER)
@@ -351,7 +350,6 @@ class Engine:
             print("Loading TensorRT engine from byte cache.")
             self.engine = engine_from_bytes(self.refited_engine_byte)
             self.refited_engine_byte = None
-            self.refit_from_dict(self.buffers, {})
         else:
             print(f"Loading TensorRT engine: {self.engine_path}")
             with zstandard.open(self.engine_path, "rb") as zrfp:
@@ -371,9 +369,14 @@ class Engine:
 
     def offload(self):
         if self.refited_engine_byte is None:
-            self.refited_engine_byte = bytes_from_engine(self.engine)
-            for k in self.buffers:
-                self.buffers[k] = self.buffers[k].to("cpu")
+            serialization_config = self.engine.create_serialization_config()
+            serialization_config.flags &= ~(
+                1 << int(trt.SerializationFlag.EXCLUDE_WEIGHTS)
+            )
+            self.refited_engine_byte = self.engine.serialize_with_config(
+                serialization_config
+            )
+            self.buffers.clear()
         self.unload()
         self.tensors = OrderedDict()
         self.shared_device_memory = None
@@ -384,6 +387,10 @@ class Engine:
 
     def activate(self, reuse_device_memory=None):
         if self.context is None:
+            if self.engine.streamable_weights_size > 0:
+                self.engine.weight_streaming_budget_v2 = 1000 * 1000 * 1000 * 3
+                # print(self.engine.weight_streaming_scratch_memory_size)
+
             if reuse_device_memory:
                 self.context = (
                     self.engine.create_execution_context_without_device_memory()
@@ -391,6 +398,15 @@ class Engine:
             #    self.context.device_memory = reuse_device_memory
             else:
                 self.context = self.engine.create_execution_context()
+            assert self.context is not None
+
+    def get_device_memory_size(self):
+        if self.engine is not None:
+            self.last_device_memory_size = (
+                self.engine.device_memory_size_v2
+                + self.engine.weight_streaming_budget_v2
+            )
+        return self.last_device_memory_size
 
     def allocate_buffers(
         self, shape_dict=None, device="cuda", allocate_input_buffers=True
@@ -420,7 +436,7 @@ class Engine:
             self.tensors[tensor_name] = tensor
         if not self.enable_cuda_graph or self.shared_device_memory is None:
             self.shared_device_memory = torch.empty(
-                self.engine.device_memory_size, dtype=torch.uint8, device=device
+                self.engine.device_memory_size_v2, dtype=torch.uint8, device=device
             )
             self.context.device_memory = self.shared_device_memory.data_ptr()
         nvtx.range_pop()

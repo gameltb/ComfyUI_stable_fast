@@ -252,7 +252,15 @@ class TensorRTEngineOriginModelPatcherWrapper_BlockPatch(
             return other
         raise ValueError(f"instance must be {tcls.__qualname__}")
 
+    def patch_init(self, tensorrt_module_patch):
+        self.tensorrt_module_patch = tensorrt_module_patch
+
+    def patch_deinit(self):
+        self.tensorrt_module_patch = None
+        del self.tensorrt_module_patch
+
     def cast_to_base_model(self):
+        self.patch_deinit()
         self.__class__ = comfy.model_patcher.ModelPatcher
         return self
 
@@ -290,9 +298,48 @@ class TensorRTEngineOriginModelPatcherWrapper_UnetPatch(
             return other
         raise ValueError(f"instance must be {tcls.__qualname__}")
 
+    def patch_init(self, tensorrt_module_patch):
+        self.tensorrt_module_patch = tensorrt_module_patch
+
+    def patch_deinit(self):
+        self.tensorrt_module_patch = None
+        del self.tensorrt_module_patch
+
     def cast_to_base_model(self):
+        self.patch_deinit()
         self.__class__ = comfy.model_patcher.ModelPatcher
         return self
+
+    def model_size(self):
+        if (
+            self.tensorrt_module_patch is None
+            or self.tensorrt_module_patch.tensorrt_module is None
+        ):
+            return super().model_size()
+        return 0
+
+    def patch_model_lowvram(
+        self,
+        device_to=None,
+        lowvram_model_memory=0,
+        force_patch_weights=False,
+        *arg,
+        **kwargs,
+    ):
+        if (
+            self.tensorrt_module_patch is None
+            or self.tensorrt_module_patch.tensorrt_module is None
+        ):
+            return super().patch_model_lowvram(
+                device_to=device_to,
+                lowvram_model_memory=lowvram_model_memory,
+                force_patch_weights=force_patch_weights,
+                *arg,
+                **kwargs,
+            )
+        return self.patch_model(
+            device_to=device_to,
+        )
 
     def patch_model(self, device_to=None, *arg, **kwargs):
         model = super().patch_model()
@@ -362,6 +409,7 @@ class ApplyTensorRTUnet:
         model_tensor_rt = patch_type_clss[1].cast_from(model_tensor_rt)
         patch.model = model_tensor_rt
         model_tensor_rt.set_model_unet_function_wrapper(ModelUnetFunctionWrapper(patch))
+        model_tensor_rt.patch_init(patch)
         if hook_memory_require:
             model_tensor_rt.add_object_patch("memory_required", hook_memory_required)
         return (model_tensor_rt,)

@@ -54,7 +54,6 @@ class CallableTensorRTEngineWrapper:
         self.input_profile_info = None
 
         self.engine_comfy_model_patcher_wrapper = None
-        self.device_memory_size = 0
 
         self.engine_cache_map = {}
 
@@ -231,7 +230,6 @@ class CallableTensorRTEngineWrapper:
                     nvtx.range_push("load engine")
                     if self.engine.engine is None:
                         self.engine.load()
-                    self.device_memory_size = self.engine.engine.device_memory_size
                     nvtx.range_push("refit engine")
                     if self.onnx_refit_info is not None:
                         _logger.info("using fast refit")
@@ -250,7 +248,7 @@ class CallableTensorRTEngineWrapper:
                             engine,
                             load_device=self.tensorrt_context.cuda_device,
                             offload_device="cpu",
-                            size=self.device_memory_size,
+                            size=self.engine.get_device_memory_size(),
                         )
                     )
                     comfy.model_management.load_models_gpu(
@@ -260,7 +258,7 @@ class CallableTensorRTEngineWrapper:
                             *get_additional_keep_models(),
                             *additional_keep_models,
                         ],
-                        self.device_memory_size,
+                        self.engine.get_device_memory_size(),
                     )
                     self.input_profile_info = input_profile_info
                     self.engine_cache_map[engine_cache_key] = (
@@ -280,7 +278,7 @@ class CallableTensorRTEngineWrapper:
                     self.engine_comfy_model_patcher_wrapper,
                     *get_additional_keep_models(),
                 ],
-                self.device_memory_size,
+                self.engine.get_device_memory_size(),
             )
 
         self.engine.allocate_buffers(

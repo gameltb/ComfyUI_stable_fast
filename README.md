@@ -59,7 +59,7 @@ Run ComfyUI with `--disable-cuda-malloc` may be possible to optimize the speed f
 > - stable fast will optimize the speed when generating images using the same model for the second time. if you switch models or Lora frequently, please consider disable enable_cuda_graph.
 > - **It is better to connect the `Apply StableFast Unet` node directly to the `KSampler` node, and there should be no nodes between them that will change the weight, such as the `Load LoRA` node, but for some nodes, placing it between them can prevent useless recompilation caused by modifying the node parameters, such as the `FreeU` node, you can try to use other nodes, but I can't guarantee that it will work properly.**
 
-## TensorRT(testing)
+## TensorRT
 
 Run ComfyUI with `--disable-xformers --force-fp16 --fp16-vae` and use `Apply TensorRT Unet` like `Apply StableFast Unet`.  
 The Engine will be cached in `tensorrt_engine_cache`.
@@ -67,6 +67,23 @@ The Engine will be cached in `tensorrt_engine_cache`.
 > [!NOTE]
 >
 > - If you encounter an error after updating, you can try deleting the `tensorrt_engine_cache`.
+
+### Apply TensorRT Unet Node
+
+- enable_cuda_graph
+  - With or without CUDA Graph, this should make it slightly faster, but at the moment there is a problem with the implementation and this has no effect. Also, even if it works, it won't work with WEIGHT_STREAMING.
+- patch_type
+  - UNET compiles the whole unet as a model, and it's faster. However, some nodes are unusable because TensorRT does not support some operations in PyTorch, such as FreeU nodes. Also, if you don't have enough video memory to put down the entire model, you'll need to select this option to use TensorRT, otherwise it's likely to be slower than running directly.
+  - UNET_BLOCK splits unet into several small models to allow pytorch to perform operations between them that TensorRT does not support. It takes quite a bit of time to compile and load, but the speed of completion is not much compared to XXX. It may not be acceptable to use this option most of the time.
+- hook_memory_require
+  - keep true.
+- keep_width
+- keep_height
+- keep_batch_size
+- keep_embedding_block
+  - The parameters starting with `keep_` above are used when building the engine, and they specify the maximum value of the parameters that the engine accepts. At the same time, the node will look up the cached engine based on these values, so if you want to build the engine as few times as possible, keep a fixed set of values based on different types of models such as sd15 or sdxl. If one of the parameters you use is greater than them, it will trigger the build. embedding_block is related to the length of your prompt, and the longer the length, the greater the value.
+
+When you use ControlNet, different control image sizes will cause the engine to compile for now.
 
 # Table
 
