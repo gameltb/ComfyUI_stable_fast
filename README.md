@@ -11,6 +11,7 @@ Experimental usage of [stable-fast](https://github.com/chengzeyi/stable-fast) an
 
 # Update
 
+- 2024-07-31 : Unfortunately, using the same engine on different models will result in a slight variation in the results or complete unusability. Added an option to allow building dedicated engines for different models. However, some models still have different outputs than PyTorch.
 - 2024-07-29 : significantly improved performance of starting and switching TensorRT models when there is an engine cache on PyTorch 2.4.0. add WEIGHT_STREAMING support, you can run SDXL on 6GB device with TensorRT. However, the engine unloading caused by VAE decoding can greatly slow down the overall generation speed.
 
 # Installation
@@ -75,13 +76,13 @@ The Engine will be cached in `tensorrt_engine_cache`.
 - patch_type
   - UNET compiles the whole unet as a model, and it's faster. However, some nodes are unusable because TensorRT does not support some operations in PyTorch, such as FreeU nodes. Also, if you don't have enough video memory to put down the entire model, you'll need to select this option to use TensorRT, otherwise it's likely to be slower than running directly.
   - UNET_BLOCK splits unet into several small models to allow pytorch to perform operations between them that TensorRT does not support. It takes quite a bit of time to compile and load, but the speed of completion is not much compared to XXX. It may not be acceptable to use this option most of the time.
-- hook_memory_require
-  - keep true.
 - keep_width
 - keep_height
 - keep_batch_size
 - keep_embedding_block
   - The parameters starting with `keep_` above are used when building the engine, and they specify the maximum value of the parameters that the engine accepts. At the same time, the node will look up the cached engine based on these values, so if you want to build the engine as few times as possible, keep a fixed set of values based on different types of models such as sd15 or sdxl. If one of the parameters you use is greater than them, it will trigger the build. embedding_block is related to the length of your prompt, and the longer the length, the greater the value.
+- use_dedicated_engine
+  - building dedicated engines for different models.
 
 When you use ControlNet, different control image sizes will cause the engine to compile for now.
 

@@ -25,13 +25,15 @@ from .module.tensorrt_wrapper import TensorRTEngineConfig, TensorRTEngineContext
 
 
 class BlockTensorRTPatch(torch.nn.Module):
-    def __init__(self, config, model_config):
+    def __init__(self, config, model_config, model_sampling_type):
         super().__init__()
         self.model: torch.nn.Module = None
         self.model_config = model_config
+        self.model_sampling_type = model_sampling_type
         self.config = config
         self.model_device = torch.device("cpu")
         self.tensorrt_module = None
+        self.lowvram_model_memory = 0
 
     def __deepcopy__(self, memo=None):
         return self
@@ -127,6 +129,9 @@ class BlockTensorRTPatch(torch.nn.Module):
         self.tensorrt_module.tensorrt_context.unet_config = (
             self.model_config.unet_config
         )
+        self.tensorrt_module.tensorrt_context.model_sampling_type = (
+            self.model_sampling_type
+        )
         self.tensorrt_module.tensorrt_context.cuda_stream = torch.cuda.current_stream()
         self.tensorrt_module.tensorrt_context.cuda_device = x.device
         transformer_options[TENSORRT_CONTEXT_KEY] = self.tensorrt_module
@@ -155,8 +160,8 @@ class BlockTensorRTPatch(torch.nn.Module):
 
 
 class UnetTensorRTPatch(BlockTensorRTPatch):
-    def __init__(self, config, model_config):
-        super().__init__(config, model_config)
+    def __init__(self, *args):
+        super().__init__(*args)
         self.tensorrt_context = TensorRTEngineContext()
 
     def __call__(
@@ -171,8 +176,9 @@ class UnetTensorRTPatch(BlockTensorRTPatch):
     ):
         if self.tensorrt_module is None:
             devices = set((v.device for v in self.model.state_dict().values()))
-            if torch.device("cpu") in devices:
+            if torch.device("cpu") in devices and self.lowvram_model_memory > 0:
                 self.tensorrt_context.enable_weight_streaming = True
+                self.tensorrt_context.lowvram_model_memory = self.lowvram_model_memory
             self.tensorrt_module = (
                 CallableTensorRTEngineWrapperDynamicShapeUNetModelForward(
                     self.tensorrt_context, ""
@@ -196,6 +202,8 @@ class UnetTensorRTPatch(BlockTensorRTPatch):
             # self.tensorrt_context.cuda_stream = torch.cuda.current_stream()
             self.tensorrt_context.cuda_stream = torch.cuda.Stream(x.device)
             self.tensorrt_context.infer_cuda_stream_sync = True
+
+        self.tensorrt_context.identify_weight_hash = self.config.use_dedicated_engine
 
         self.tensorrt_context.cuda_device = x.device
         # self.tensorrt_context.dtype = input_x.dtype
@@ -330,6 +338,8 @@ class TensorRTEngineOriginModelPatcherWrapper_UnetPatch(
         *arg,
         **kwargs,
     ):
+        if lowvram_model_memory > 0 and self.tensorrt_module_patch is not None:
+            self.tensorrt_module_patch.lowvram_model_memory = lowvram_model_memory
         if (
             self.tensorrt_module_patch is None
             or self.tensorrt_module_patch.tensorrt_module is None
@@ -370,7 +380,6 @@ class ApplyTensorRTUnet:
                 "model": ("MODEL",),
                 "enable_cuda_graph": ("BOOLEAN", {"default": True}),
                 "patch_type": ([e.name for e in PatchType], {"default": "UNET"}),
-                "hook_memory_require": ("BOOLEAN", {"default": True}),
                 "keep_width": (
                     "INT",
                     {"default": 768, "min": 16, "max": nodes.MAX_RESOLUTION, "step": 8},
@@ -381,6 +390,7 @@ class ApplyTensorRTUnet:
                 ),
                 "keep_batch_size": ("INT", {"default": 1, "min": 1, "max": 4096}),
                 "keep_embedding_block": ("INT", {"default": 2, "min": 1, "max": 4096}),
+                "use_dedicated_engine": ("BOOLEAN", {"default": False}),
             }
         }
 
@@ -394,11 +404,11 @@ class ApplyTensorRTUnet:
         model,
         enable_cuda_graph,
         patch_type,
-        hook_memory_require,
         keep_width,
         keep_height,
         keep_batch_size,
         keep_embedding_block,
+        use_dedicated_engine,
     ):
         config = TensorRTEngineConfig(
             enable_cuda_graph=enable_cuda_graph,
@@ -406,16 +416,18 @@ class ApplyTensorRTUnet:
             keep_height=keep_height,
             keep_batch_size=keep_batch_size,
             keep_embedding_block=keep_embedding_block,
+            use_dedicated_engine=use_dedicated_engine,
         )
         patch_type_clss = PatchType[patch_type].value
         model_tensor_rt = model.clone()
-        patch = patch_type_clss[0](config, model.model.model_config)
+        patch = patch_type_clss[0](
+            config, model.model.model_config, model.model.model_type
+        )
         model_tensor_rt = patch_type_clss[1].cast_from(model_tensor_rt)
         patch.model = model_tensor_rt
         model_tensor_rt.set_model_unet_function_wrapper(ModelUnetFunctionWrapper(patch))
         model_tensor_rt.patch_init(patch)
-        if hook_memory_require:
-            model_tensor_rt.add_object_patch("memory_required", hook_memory_required)
+        model_tensor_rt.add_object_patch("memory_required", hook_memory_required)
         return (model_tensor_rt,)
 
 

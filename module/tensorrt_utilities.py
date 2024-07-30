@@ -162,9 +162,6 @@ class Engine:
     def refit_simple(self, onnx_model):
         print(f"Refitting TensorRT engine with {onnx_model} weights")
 
-        if self.engine.streamable_weights_size > 0:
-            self.activate(True)
-
         refitter = trt.Refitter(self.engine, TRT_LOGGER)
         parser_refitter = trt.OnnxParserRefitter(refitter, TRT_LOGGER)
         if type(onnx_model) is bytes:
@@ -180,9 +177,6 @@ class Engine:
         refit_weights: dict[str, torch.Tensor],
         constant_refit_weights: dict[str, torch.Tensor],
     ):
-        if self.engine.streamable_weights_size > 0:
-            self.activate(True)
-
         # Initialize refitter
         refitter = trt.Refitter(self.engine, TRT_LOGGER)
 
@@ -297,6 +291,8 @@ class Engine:
 
         if enable_refit:
             config.set_flag(trt.BuilderFlag.STRIP_PLAN)
+            # Slower than REFIT_IDENTICAL
+            # config.set_flag(trt.BuilderFlag.REFIT)
             config.set_flag(trt.BuilderFlag.REFIT_IDENTICAL)
 
         if enable_weight_streaming:
@@ -385,10 +381,18 @@ class Engine:
         self.inferred = False
         self.cuda_graph_stream = None
 
-    def activate(self, reuse_device_memory=None):
+    def activate(self, reuse_device_memory=None, budget_size=None):
         if self.context is None:
             if self.engine.streamable_weights_size > 0:
-                self.engine.weight_streaming_budget_v2 = 1000 * 1000 * 1000 * 3
+                if budget_size is None:
+                    budget_size = 1000 * 1000 * 1000 * 3
+                if budget_size < 0:
+                    budget_size = 0
+                self.engine.weight_streaming_budget_v2 = (
+                    budget_size
+                    if budget_size < self.engine.streamable_weights_size
+                    else self.engine.streamable_weights_size
+                )
                 # print(self.engine.weight_streaming_scratch_memory_size)
 
             if reuse_device_memory:
@@ -402,10 +406,13 @@ class Engine:
 
     def get_device_memory_size(self):
         if self.engine is not None:
-            self.last_device_memory_size = (
-                self.engine.device_memory_size_v2
-                + self.engine.weight_streaming_budget_v2
-            )
+            if self.engine.streamable_weights_size > 0:
+                self.last_device_memory_size = (
+                    self.engine.device_memory_size_v2
+                    + self.engine.weight_streaming_budget_v2
+                )
+            else:
+                self.last_device_memory_size = self.engine.device_memory_size_v2
         return self.last_device_memory_size
 
     def allocate_buffers(

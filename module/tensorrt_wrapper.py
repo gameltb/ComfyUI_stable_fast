@@ -13,6 +13,7 @@ import comfy.gligen
 import comfy.ldm.modules.diffusionmodules.openaimodel
 import comfy.model_management
 import comfy.model_patcher
+import numpy
 import safetensors
 import safetensors.torch
 import tensorrt
@@ -38,6 +39,7 @@ class TensorRTEngineConfig:
     keep_height: int = 768
     keep_batch_size: int = 2
     keep_embedding_block: int = 2
+    use_dedicated_engine: bool = False
 
 
 class CallableTensorRTEngineWrapper:
@@ -50,6 +52,7 @@ class CallableTensorRTEngineWrapper:
         self.onnx_cache = None
         self.onnx_refit_info = None
 
+        self.module_identification = None
         self.input_shape_info = None
         self.input_profile_info = None
 
@@ -102,7 +105,7 @@ class CallableTensorRTEngineWrapper:
                     return False
         return True
 
-    def __call__(self, module, /, **kwargs: Any) -> Any:
+    def __call__(self, module: torch.nn.Module, /, **kwargs: Any) -> Any:
         feed_dict, input_shape_info = self.gen_tensorrt_args(kwargs)
 
         if self.engine is None or not self.is_profile_compatible(
@@ -111,6 +114,12 @@ class CallableTensorRTEngineWrapper:
             self.input_shape_info = input_shape_info
             input_profile_info = self.gen_tensorrt_args_profile(input_shape_info)
 
+            if self.tensorrt_context.identify_weight_hash:
+                if self.module_identification is None:
+                    self.module_identification = sha256sum_state_dict(
+                        module.state_dict()
+                    )
+
             engine_cache_key = (
                 hash_arg(torch.version.__version__),
                 hash_arg(tensorrt.__version__),
@@ -118,6 +127,8 @@ class CallableTensorRTEngineWrapper:
                 hash_arg(self.identification),
                 hash_arg(input_profile_info),
                 hash_arg(self.tensorrt_context.enable_weight_streaming),
+                hash_arg(str(self.tensorrt_context.model_sampling_type)),
+                hash_arg(str(self.module_identification)),
             )
 
             if engine_cache_key in self.engine_cache_map:
@@ -138,6 +149,8 @@ class CallableTensorRTEngineWrapper:
                     hash_arg(self.tensorrt_context.unet_config),
                     hash_arg(self.identification),
                     hash_arg((args_name, dynamic_axes)),
+                    hash_arg(str(self.tensorrt_context.model_sampling_type)),
+                    hash_arg(str(self.module_identification)),
                 )
                 self.onnx_refit_info = get_refit_info_cache(onnx_cache_key)
 
@@ -188,6 +201,7 @@ class CallableTensorRTEngineWrapper:
                                     )
                                 )
                                 self.onnx_refit_info.save()
+                            del params_dict
                         else:
                             torch.onnx.export(
                                 module,
@@ -235,6 +249,11 @@ class CallableTensorRTEngineWrapper:
                     nvtx.range_push("load engine")
                     if self.engine.engine is None:
                         self.engine.load()
+                    self.engine.activate(
+                        True,
+                        self.tensorrt_context.lowvram_model_memory
+                        - self.engine.engine.device_memory_size_v2,
+                    )
                     nvtx.range_push("refit engine")
                     if (
                         self.tensorrt_context.enable_fast_refit
@@ -250,7 +269,6 @@ class CallableTensorRTEngineWrapper:
                     else:
                         self.engine.refit_simple(self.onnx_cache)
                     nvtx.range_pop()
-                    self.engine.activate(True)
                     self.engine_comfy_model_patcher_wrapper = (
                         TensorRTEngineComfyModelPatcherWrapper(
                             engine,
@@ -313,7 +331,11 @@ class TensorRTEngineComfyModelPatcherWrapper(comfy.model_patcher.ModelPatcher):
         if device_to is not None:
             if self.model.engine is None:
                 self.model.load()
-                self.model.activate(True)
+                self.model.activate(
+                    True,
+                    self.model.last_device_memory_size
+                    - self.model.engine.device_memory_size_v2,
+                )
             self.current_device = device_to
 
         return self.model
@@ -340,12 +362,15 @@ class TensorRTEngineContext:
     shared_device_memory = None
     cuda_stream = None
     unet_config: dict = None
+    model_sampling_type = None
     model_type: str = ""
     keep_models: List = field(default_factory=lambda: [])
     dtype: object = torch.float16
     enable_weight_streaming: bool = False
     enable_fast_refit: bool = True
     infer_cuda_stream_sync: bool = False
+    identify_weight_hash: bool = False
+    lowvram_model_memory = 0
 
 
 TIMING_CACHE_PATH = os.path.join(
@@ -429,3 +454,13 @@ class TorchTensorRTRefitInfo:
             if st.metadata() is not None:
                 self.tensor_gen_map = json.loads(st.metadata()["tensor_gen_map"])
         return self
+
+
+def sha256sum_state_dict(state_dict: dict[str, torch.Tensor]):
+    hasher = hashlib.sha256()
+
+    for k, v in state_dict.items():
+        tensor_bytes = v.cpu().detach().numpy().astype(numpy.float16).data.tobytes()
+        hasher.update(tensor_bytes)
+
+    return hasher.hexdigest()
