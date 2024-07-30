@@ -11,7 +11,7 @@ Experimental usage of [stable-fast](https://github.com/chengzeyi/stable-fast) an
 
 # Update
 
-- 2024-07-29 : significantly improved performance of starting and switching TensorRT models when there is an engine cache on PyTorch 2.4.0. add WEIGHT_STREAMING support, you can run SDXL on 6GB device with TensorRT for now.
+- 2024-07-29 : significantly improved performance of starting and switching TensorRT models when there is an engine cache on PyTorch 2.4.0. add WEIGHT_STREAMING support, you can run SDXL on 6GB device with TensorRT. However, the engine unloading caused by VAE decoding can greatly slow down the overall generation speed.
 
 # Installation
 
