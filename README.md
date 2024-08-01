@@ -74,8 +74,8 @@ The Engine will be cached in `tensorrt_engine_cache`.
 - enable_cuda_graph
   - With or without CUDA Graph, this should make it slightly faster, but at the moment there is a problem with the implementation and this has no effect. Also, even if it works, it won't work with WEIGHT_STREAMING.
 - patch_type
-  - UNET compiles the whole unet as a model, and it's faster. However, some nodes are unusable because TensorRT does not support some operations in PyTorch, such as FreeU nodes. Also, if you don't have enough video memory to put down the entire model, you'll need to select this option to use TensorRT, otherwise it's likely to be slower than running directly.
-  - UNET_BLOCK splits unet into several small models to allow pytorch to perform operations between them that TensorRT does not support. It takes quite a bit of time to compile and load, but the speed of completion is not much compared to XXX. It may not be acceptable to use this option most of the time.
+  - `UNET` compiles the whole unet as a model, and it's faster. However, some nodes are unusable because TensorRT does not support some operations in PyTorch, such as FreeU nodes. Also, if you don't have enough video memory to put down the entire model, you'll need to select this option to use TensorRT, otherwise it's likely to be slower than running directly.
+  - `UNET_BLOCK` splits unet into several small models to allow pytorch to perform operations between them that TensorRT does not support. It takes quite a bit of time to compile and load, but the speed of completion is not much compared to `UNET`. It may not be acceptable to use this option most of the time.
 - keep_width
 - keep_height
 - keep_batch_size
