@@ -113,6 +113,21 @@ class BlockTensorRTPatch(torch.nn.Module):
         if self.tensorrt_module is None:
             self.tensorrt_module = TensorRTEngineBlockContext()
             self.tensorrt_module.tensorrt_context.keep_models.append(self.model)
+
+            self.tensorrt_module.tensorrt_context.model_type = (
+                self.model_config.__class__.__name__
+            )
+            self.tensorrt_module.tensorrt_context.unet_config = (
+                self.model_config.unet_config
+            )
+            self.tensorrt_module.tensorrt_context.model_sampling_type = (
+                self.model_sampling_type
+            )
+            self.tensorrt_module.tensorrt_context.cuda_stream = (
+                torch.cuda.current_stream()
+            )
+            self.tensorrt_module.tensorrt_context.cuda_device = x.device
+            
             self.warmup(
                 x,
                 timesteps,
@@ -123,17 +138,6 @@ class BlockTensorRTPatch(torch.nn.Module):
                 **kwargs,
             )
 
-        self.tensorrt_module.tensorrt_context.model_type = (
-            self.model_config.__class__.__name__
-        )
-        self.tensorrt_module.tensorrt_context.unet_config = (
-            self.model_config.unet_config
-        )
-        self.tensorrt_module.tensorrt_context.model_sampling_type = (
-            self.model_sampling_type
-        )
-        self.tensorrt_module.tensorrt_context.cuda_stream = torch.cuda.current_stream()
-        self.tensorrt_module.tensorrt_context.cuda_device = x.device
         transformer_options[TENSORRT_CONTEXT_KEY] = self.tensorrt_module
 
         do_hook_forward_timestep_embed()
@@ -179,6 +183,23 @@ class UnetTensorRTPatch(BlockTensorRTPatch):
             if torch.device("cpu") in devices and self.lowvram_model_memory > 0:
                 self.tensorrt_context.enable_weight_streaming = True
                 self.tensorrt_context.lowvram_model_memory = self.lowvram_model_memory
+
+            self.tensorrt_context.model_type = self.model_config.__class__.__name__
+            self.tensorrt_context.unet_config = self.model_config.unet_config
+            self.tensorrt_context.model_sampling_type = self.model_sampling_type
+
+            if self.tensorrt_context.cuda_stream is None:
+                # self.tensorrt_context.cuda_stream = torch.cuda.current_stream()
+                self.tensorrt_context.cuda_stream = torch.cuda.Stream(x.device)
+                self.tensorrt_context.infer_cuda_stream_sync = True
+
+            self.tensorrt_context.identify_weight_hash = (
+                self.config.use_dedicated_engine
+            )
+
+            self.tensorrt_context.cuda_device = x.device
+            # self.tensorrt_context.dtype = input_x.dtype
+
             self.tensorrt_module = (
                 CallableTensorRTEngineWrapperDynamicShapeUNetModelForward(
                     self.tensorrt_context, ""
@@ -194,19 +215,6 @@ class UnetTensorRTPatch(BlockTensorRTPatch):
                     transformer_options,
                     **kwargs,
                 )
-
-        self.tensorrt_context.model_type = self.model_config.__class__.__name__
-        self.tensorrt_context.unet_config = self.model_config.unet_config
-
-        if self.tensorrt_context.cuda_stream is None:
-            # self.tensorrt_context.cuda_stream = torch.cuda.current_stream()
-            self.tensorrt_context.cuda_stream = torch.cuda.Stream(x.device)
-            self.tensorrt_context.infer_cuda_stream_sync = True
-
-        self.tensorrt_context.identify_weight_hash = self.config.use_dedicated_engine
-
-        self.tensorrt_context.cuda_device = x.device
-        # self.tensorrt_context.dtype = input_x.dtype
 
         module_factory = UNetModelModuleFactory(
             self.model,

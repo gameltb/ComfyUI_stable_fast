@@ -218,7 +218,7 @@ class Engine:
             self.buffers[trt_weight_name] = refit_weight
 
             # apply refit
-            refitter.set_named_weights(trt_weight_name, trt_wt_tensor, trt_wt_location)
+            assert refitter.set_named_weights(trt_weight_name, trt_wt_tensor, trt_wt_location)
             refitted_weights.add(trt_weight_name)
 
         # assert set(refitted_weights) == set(refit_weights.keys())
@@ -381,19 +381,28 @@ class Engine:
         self.inferred = False
         self.cuda_graph_stream = None
 
-    def activate(self, reuse_device_memory=None, budget_size=None):
+    def is_weight_streaming_engine(self):
+        return self.engine.streamable_weights_size > 0
+
+    def activate(
+        self, reuse_device_memory=None, memory_limit_size=1000 * 1000 * 1000 * 3
+    ):
         if self.context is None:
-            if self.engine.streamable_weights_size > 0:
-                if budget_size is None:
-                    budget_size = 1000 * 1000 * 1000 * 3
-                if budget_size < 0:
-                    budget_size = 0
-                self.engine.weight_streaming_budget_v2 = (
-                    budget_size
-                    if budget_size < self.engine.streamable_weights_size
-                    else self.engine.streamable_weights_size
-                )
-                # print(self.engine.weight_streaming_scratch_memory_size)
+            if self.is_weight_streaming_engine():
+
+                def update_budget_size():
+                    budget_size = memory_limit_size - self.engine.device_memory_size_v2
+                    if budget_size < 0:
+                        budget_size = 0
+                    self.engine.weight_streaming_budget_v2 = (
+                        budget_size
+                        if budget_size < self.engine.streamable_weights_size
+                        else self.engine.streamable_weights_size
+                    )
+
+                # if weight_streaming enable , device_memory_size_v2 will change.
+                update_budget_size()
+                update_budget_size()
 
             if reuse_device_memory:
                 self.context = (
@@ -406,7 +415,7 @@ class Engine:
 
     def get_device_memory_size(self):
         if self.engine is not None:
-            if self.engine.streamable_weights_size > 0:
+            if self.is_weight_streaming_engine():
                 self.last_device_memory_size = (
                     self.engine.device_memory_size_v2
                     + self.engine.weight_streaming_budget_v2
@@ -441,7 +450,7 @@ class Engine:
                 tuple(shape), dtype=numpy_to_torch_dtype_dict[dtype], device=device
             )
             self.tensors[tensor_name] = tensor
-        if not self.enable_cuda_graph or self.shared_device_memory is None:
+        if self.shared_device_memory is None:
             self.shared_device_memory = torch.empty(
                 self.engine.device_memory_size_v2, dtype=torch.uint8, device=device
             )
@@ -453,7 +462,13 @@ class Engine:
     def release_buffers(self):
         self.tensors = OrderedDict()
 
-    def infer(self, feed_dict, stream: torch.cuda.Stream, stream_sync=False):
+    def infer(
+        self,
+        feed_dict,
+        stream: torch.cuda.Stream,
+        stream_sync=False,
+        free_shared_device_memory=True,
+    ):
         nvtx.range_push("set_tensors")
         for name, buf in feed_dict.items():
             if name in self.tensors:
@@ -489,12 +504,12 @@ class Engine:
             self.inferred = True
         nvtx.range_pop()
 
-        if not self.enable_cuda_graph:
-            del self.shared_device_memory
-            self.shared_device_memory = None
-
         if stream_sync:
             stream.synchronize()
+
+        if not self.enable_cuda_graph and free_shared_device_memory:
+            del self.shared_device_memory
+            self.shared_device_memory = None
 
         return self.tensors
 

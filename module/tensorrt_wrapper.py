@@ -250,9 +250,7 @@ class CallableTensorRTEngineWrapper:
                     if self.engine.engine is None:
                         self.engine.load()
                     self.engine.activate(
-                        True,
-                        self.tensorrt_context.lowvram_model_memory
-                        - self.engine.engine.device_memory_size_v2,
+                        True, self.tensorrt_context.lowvram_model_memory
                     )
                     nvtx.range_push("refit engine")
                     if (
@@ -312,10 +310,17 @@ class CallableTensorRTEngineWrapper:
             device=self.tensorrt_context.cuda_device,
             allocate_input_buffers=False,
         )
+
+        # keep shared_device_memory if free memory is too small, re-allocating the same size of memory in the next iteration may fail.
+        free_shared_device_memory = not comfy.model_management.get_free_memory(
+            self.tensorrt_context.cuda_device
+        ) < (self.engine.engine.device_memory_size_v2 * 0.5)
+
         output = self.engine.infer(
             feed_dict,
             self.tensorrt_context.cuda_stream,
             self.tensorrt_context.infer_cuda_stream_sync,
+            free_shared_device_memory=free_shared_device_memory,
         )
         output = self.gen_tensorrt_outputs(output)
         self.engine.release_buffers()
@@ -331,11 +336,7 @@ class TensorRTEngineComfyModelPatcherWrapper(comfy.model_patcher.ModelPatcher):
         if device_to is not None:
             if self.model.engine is None:
                 self.model.load()
-                self.model.activate(
-                    True,
-                    self.model.last_device_memory_size
-                    - self.model.engine.device_memory_size_v2,
-                )
+                self.model.activate(True, self.model.last_device_memory_size)
             self.current_device = device_to
 
         return self.model
