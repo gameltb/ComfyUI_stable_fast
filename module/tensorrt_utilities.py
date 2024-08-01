@@ -218,7 +218,9 @@ class Engine:
             self.buffers[trt_weight_name] = refit_weight
 
             # apply refit
-            assert refitter.set_named_weights(trt_weight_name, trt_wt_tensor, trt_wt_location)
+            assert refitter.set_named_weights(
+                trt_weight_name, trt_wt_tensor, trt_wt_location
+            )
             refitted_weights.add(trt_weight_name)
 
         # assert set(refitted_weights) == set(refit_weights.keys())
@@ -357,14 +359,8 @@ class Engine:
         for idx in range(self.engine.num_io_tensors):
             self.binding_set.add(self.engine[idx])
 
-    def unload(self):
-        del self.context
-        self.context = None
-        del self.engine
-        self.engine = None
-
-    def offload(self):
-        if self.refited_engine_byte is None:
+    def offload(self, offload_context_only=False):
+        if not offload_context_only and self.refited_engine_byte is None:
             serialization_config = self.engine.create_serialization_config()
             serialization_config.flags &= ~(
                 1 << int(trt.SerializationFlag.EXCLUDE_WEIGHTS)
@@ -373,7 +369,14 @@ class Engine:
                 serialization_config
             )
             self.buffers.clear()
-        self.unload()
+
+        del self.context
+        self.context = None
+
+        if not offload_context_only:
+            del self.engine
+            self.engine = None
+
         self.tensors = OrderedDict()
         self.shared_device_memory = None
 
