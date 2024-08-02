@@ -251,16 +251,17 @@ class CallableTensorRTEngineWrapper:
                         self.engine.load()
 
                     # reserve some memory for pytorch
-                    memory_limit_size = int(comfy.model_management.get_total_memory() - (
-                        1024 * 1024 * 1024 * 2
-                    ))
+                    memory_limit_size = int(
+                        comfy.model_management.get_total_memory()
+                        - (1024 * 1024 * 1024 * 2)
+                    )
 
                     self.engine.activate(
                         True,
-                        self.tensorrt_context.lowvram_model_memory
-                        if memory_limit_size
-                        > self.tensorrt_context.lowvram_model_memory
-                        else memory_limit_size,
+                        min(
+                            self.tensorrt_context.lowvram_model_memory,
+                            memory_limit_size,
+                        ),
                     )
                     nvtx.range_push("refit engine")
                     if (

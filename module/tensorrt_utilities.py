@@ -397,10 +397,8 @@ class Engine:
                     budget_size = memory_limit_size - self.engine.device_memory_size_v2
                     if budget_size < 0:
                         budget_size = 0
-                    self.engine.weight_streaming_budget_v2 = (
-                        budget_size
-                        if budget_size < self.engine.streamable_weights_size
-                        else self.engine.streamable_weights_size
+                    self.engine.weight_streaming_budget_v2 = min(
+                        budget_size, self.engine.streamable_weights_size
                     )
 
                 # if weight_streaming enable , device_memory_size_v2 will change.
