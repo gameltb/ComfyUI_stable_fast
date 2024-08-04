@@ -225,8 +225,7 @@ class Engine:
 
         # assert set(refitted_weights) == set(refit_weights.keys())
         if not refitter.refit_cuda_engine():
-            print("Error: failed to refit new weights.")
-            exit(0)
+            raise Exception("Error: failed to refit new weights.")
 
         print(f"[I] Total refitted weights {len(refitted_weights)}.")
 

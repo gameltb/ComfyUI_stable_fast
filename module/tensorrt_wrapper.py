@@ -228,8 +228,9 @@ class CallableTensorRTEngineWrapper:
                 nvtx.range_pop()
 
                 additional_keep_models = []
+                additional_keep_models = get_additional_keep_models()
+
                 if engine is None:
-                    additional_keep_models = get_additional_keep_models()
                     comfy.model_management.free_memory(
                         6 * 1024 * 1024 * 1024,
                         self.tensorrt_context.cuda_device,
